@@ -1,0 +1,14 @@
+[package]
+name = "sketchir"
+version = "0.1.2"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT OR Apache-2.0"
+description = "Sketching primitives for IR: minhash/simhash/LSH-style signatures."
+documentation = "https://docs.rs/sketchir"
+publish = true
+
+[dependencies]
+rand = "0.9"
+thiserror = "2"
+
