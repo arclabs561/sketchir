@@ -5,8 +5,13 @@ edition = "2021"
 rust-version = "1.80"
 license = "MIT OR Apache-2.0"
 description = "Sketching primitives for IR: minhash/simhash/LSH-style signatures."
+repository = "https://github.com/arclabs561/sketchir"
+homepage = "https://github.com/arclabs561/sketchir"
 documentation = "https://docs.rs/sketchir"
+readme = "README.md"
 publish = true
+keywords = ["minhash", "simhash", "lsh", "information-retrieval"]
+categories = ["text-processing", "algorithms"]
 
 [dependencies]
 rand = "0.9"
