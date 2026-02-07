@@ -2,6 +2,16 @@
 
 Sketching primitives for IR: MinHash/SimHash/LSH-style signatures.
 
+## Tuning Knobs
+
+| Param | Typical | Tradeoff |
+|---|---|---|
+| `shingle_len` | 5-9 chars | Smaller = more sensitive to noise; Larger = stricter. |
+| `num_perm` | 128-256 | More = better Jaccard estimation, higher storage. |
+| `lsh_bands` | 20-50 | Controls recall/precision curve (S-curve). |
+
+## What it is
+
 `sketchir` is the index-only layer for:
 - near-duplicate detection (shingles + MinHash)
 - text fingerprinting (SimHash)
