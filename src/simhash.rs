@@ -35,6 +35,7 @@ impl SimHash {
         let mut acc = [0f32; 64];
         for (h, w) in features {
             let bits = *h;
+            #[allow(clippy::needless_range_loop)]
             for i in 0..64 {
                 let bit = (bits >> i) & 1;
                 if bit == 1 {
@@ -45,6 +46,7 @@ impl SimHash {
             }
         }
         let mut out = 0u64;
+        #[allow(clippy::needless_range_loop)]
         for i in 0..64 {
             if acc[i] > 0.0 {
                 out |= 1u64 << i;

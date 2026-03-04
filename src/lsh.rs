@@ -329,6 +329,7 @@ impl LSHIndex {
             hash_values.push(hashes);
         }
 
+        #[allow(clippy::needless_range_loop)]
         for vector_idx in 0..self.num_vectors {
             for table_idx in 0..self.params.num_tables {
                 let hash = hash_values[vector_idx][table_idx];
