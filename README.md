@@ -10,9 +10,9 @@ Sketching primitives for IR: MinHash/SimHash/LSH-style signatures.
 
 | Param | Typical | Tradeoff |
 |---|---|---|
-| `shingle_len` | 5-9 chars | Smaller = more sensitive to noise; Larger = stricter. |
-| `num_perm` | 128-256 | More = better Jaccard estimation, higher storage. |
-| `lsh_bands` | 20-50 | Controls recall/precision curve (S-curve). |
+| `ngram_size` | 3-9 chars | Smaller = more sensitive to noise; Larger = stricter. |
+| `num_bands * num_hashes_per_band` | 100-256 | More = better Jaccard estimation, higher storage. |
+| `num_bands` | 20-50 | Controls recall/precision curve (S-curve). |
 
 ## What it is
 
@@ -30,19 +30,15 @@ Sketching primitives for IR: MinHash/SimHash/LSH-style signatures.
 ## Example (MinHash blocking)
 
 ```rust
-use sketchir::{BlockingConfig, MinHashTextLSH, TextItem};
-
-let items = vec![
-    TextItem { id: "a".into(), text: "hello world".into() },
-    TextItem { id: "b".into(), text: "hello  world!".into() },
-];
+use sketchir::{BlockingConfig, MinHashTextLSH};
 
 let cfg = BlockingConfig::default();
-let mut index = MinHashTextLSH::new(cfg);
-index.add_all(&items);
+let mut index = MinHashTextLSH::new(cfg).unwrap();
+index.insert_text("a", "hello world");
+index.insert_text("b", "hello  world!");
 
-let candidates = index.candidates_for(&items[0]);
-assert!(!candidates.is_empty());
+let pairs = index.candidate_pairs();
+assert!(!pairs.is_empty());
 ```
 
 ## License

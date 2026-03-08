@@ -42,8 +42,6 @@ pub struct BlockingConfig {
     pub ngram_size: usize,
     /// Whether to use character n-grams (vs word n-grams).
     pub char_ngrams: bool,
-    /// Minimum Jaccard similarity threshold for convenience filtering.
-    pub similarity_threshold: f64,
 }
 
 impl Default for BlockingConfig {
@@ -53,7 +51,6 @@ impl Default for BlockingConfig {
             num_bands: 25,
             ngram_size: 3,
             char_ngrams: true,
-            similarity_threshold: 0.5,
         }
     }
 }
@@ -176,35 +173,11 @@ impl MinHashTextLSH {
         pairs.into_iter().collect()
     }
 
-    /// Candidate pairs with estimated similarity (signature Jaccard).
-    pub fn candidate_pairs_with_similarity(&self) -> Vec<(usize, usize, f64)> {
-        self.candidate_pairs()
-            .into_iter()
-            .filter_map(|(i, j)| {
-                let sim = self.estimated_similarity(i, j)?;
-                if sim >= self.config.similarity_threshold {
-                    Some((i, j, sim))
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
     /// Estimated similarity from MinHash signatures.
     pub fn estimated_similarity(&self, i: usize, j: usize) -> Option<f64> {
         let a = self.items.get(i)?;
         let b = self.items.get(j)?;
         Some(a.signature.jaccard(&b.signature))
-    }
-
-    /// Exact Jaccard similarity on shingles (slower than signature estimate).
-    pub fn exact_similarity(&self, i: usize, j: usize) -> Option<f64> {
-        let a = self.items.get(i)?;
-        let b = self.items.get(j)?;
-        let sa = shingle(&a.text, self.config.ngram_size, self.config.char_ngrams);
-        let sb = shingle(&b.text, self.config.ngram_size, self.config.char_ngrams);
-        Some(jaccard_similarity(&sa, &sb))
     }
 
     /// Get the item at a given index.
@@ -244,22 +217,6 @@ fn shingle(text: &str, n: usize, char_ngrams: bool) -> HashSet<String> {
             return HashSet::from([normalized]);
         }
         words.windows(n).map(|w| w.join(" ")).collect()
-    }
-}
-
-fn jaccard_similarity(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
-    if a.is_empty() && b.is_empty() {
-        return 1.0;
-    }
-    if a.is_empty() || b.is_empty() {
-        return 0.0;
-    }
-    let intersection = a.intersection(b).count();
-    let union = a.union(b).count();
-    if union == 0 {
-        0.0
-    } else {
-        intersection as f64 / union as f64
     }
 }
 

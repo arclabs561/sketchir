@@ -6,16 +6,17 @@
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 
+use crate::lcg_next;
+
 /// A small stable 64-bit FNV-1a hasher.
 ///
 /// This avoids relying on `std`'s `DefaultHasher` stability guarantees.
-#[derive(Default)]
-struct Fnv1a64 {
+pub(crate) struct Fnv1a64 {
     state: u64,
 }
 
 impl Fnv1a64 {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         // FNV offset basis
         Self {
             state: 0xcbf29ce484222325,
@@ -58,11 +59,7 @@ impl MinHash {
         let mut seeds = Vec::with_capacity(num_hashes);
         let mut rng_state = seed;
         for _ in 0..num_hashes {
-            // Simple LCG for seed generation (deterministic, cheap).
-            rng_state = rng_state
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            seeds.push(rng_state);
+            seeds.push(lcg_next(&mut rng_state));
         }
         Self { num_hashes, seeds }
     }
@@ -81,11 +78,6 @@ impl MinHash {
         MinHashSignature { values: mins }
     }
 
-    /// Number of hash functions.
-    pub fn num_hashes(&self) -> usize {
-        self.num_hashes
-    }
-
     fn hash_with_seed<T: Hash>(&self, item: &T, seed: u64) -> u64 {
         let mut hasher = Fnv1a64::new();
         seed.to_le_bytes().hash(&mut hasher);
@@ -98,10 +90,15 @@ impl MinHash {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MinHashSignature {
     /// The min-hash values for each hash function.
-    pub values: Vec<u64>,
+    pub(crate) values: Vec<u64>,
 }
 
 impl MinHashSignature {
+    /// View the raw min-hash values.
+    pub fn as_slice(&self) -> &[u64] {
+        &self.values
+    }
+
     /// Estimate Jaccard similarity from two signatures.
     pub fn jaccard(&self, other: &Self) -> f64 {
         if self.values.len() != other.values.len() || self.values.is_empty() {
@@ -114,14 +111,5 @@ impl MinHashSignature {
             .filter(|(a, b)| a == b)
             .count();
         matches as f64 / self.values.len() as f64
-    }
-
-    /// Hamming distance between signatures (positions where values differ).
-    pub fn hamming_distance(&self, other: &Self) -> usize {
-        self.values
-            .iter()
-            .zip(other.values.iter())
-            .filter(|(a, b)| a != b)
-            .count()
     }
 }

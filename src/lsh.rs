@@ -6,18 +6,20 @@
 //! - random-projection LSH for dense vectors (cosine-ish)
 
 use std::collections::{HashMap, HashSet};
+use std::fmt;
+use std::hash::{Hash, Hasher};
 
-use crate::minhash::MinHashSignature;
+use crate::minhash::{Fnv1a64, MinHashSignature};
 use crate::simhash::SimHashFingerprint;
+use crate::{all_finite, lcg_f32, lcg_next};
 
 /// Errors for LSH indexes.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
+#[non_exhaustive]
 pub enum Error {
     /// A parameter is out of range or inconsistent.
-    #[error("invalid parameter: {0}")]
     InvalidParam(&'static str),
     /// Dimension mismatch between expected and provided vectors.
-    #[error("dimension mismatch (expected {expected}, got {got})")]
     DimensionMismatch {
         /// Expected dimension.
         expected: usize,
@@ -25,15 +27,31 @@ pub enum Error {
         got: usize,
     },
     /// The index has no inserted items.
-    #[error("empty index")]
     EmptyIndex,
     /// The index has not been built yet.
-    #[error("index not built")]
     NotBuilt,
     /// Attempted to add after the index was built.
-    #[error("cannot add after build")]
     AddAfterBuild,
+    /// Input data contains non-finite values (NaN or infinity).
+    NonFiniteInput,
 }
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::InvalidParam(msg) => write!(f, "invalid parameter: {msg}"),
+            Error::DimensionMismatch { expected, got } => {
+                write!(f, "dimension mismatch (expected {expected}, got {got})")
+            }
+            Error::EmptyIndex => f.write_str("empty index"),
+            Error::NotBuilt => f.write_str("index not built"),
+            Error::AddAfterBuild => f.write_str("cannot add after build"),
+            Error::NonFiniteInput => f.write_str("input contains non-finite values (NaN or Inf)"),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
 
 /// LSH index using MinHash banding (near-duplicate detection).
 #[derive(Debug)]
@@ -105,9 +123,7 @@ impl MinHashLSH {
 }
 
 fn hash_band(values: &[u64]) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = Fnv1a64::new();
     for v in values {
         v.hash(&mut hasher);
     }
@@ -117,8 +133,6 @@ fn hash_band(values: &[u64]) -> u64 {
 /// LSH index for 64-bit SimHash fingerprints using bit sampling.
 #[derive(Debug)]
 pub struct SimHashLSH {
-    num_tables: usize,
-    bits_per_table: usize,
     bit_indices: Vec<Vec<usize>>,
     tables: Vec<HashMap<u64, Vec<usize>>>,
     fingerprints: Vec<SimHashFingerprint>,
@@ -139,8 +153,7 @@ impl SimHashLSH {
         for _ in 0..num_tables {
             let mut idxs = Vec::with_capacity(bits_per_table);
             while idxs.len() < bits_per_table {
-                rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
-                let bit = (rng_state as usize) % 64;
+                let bit = (lcg_next(&mut rng_state) as usize) % 64;
                 if !idxs.contains(&bit) {
                     idxs.push(bit);
                 }
@@ -150,8 +163,6 @@ impl SimHashLSH {
         }
 
         Ok(Self {
-            num_tables,
-            bits_per_table,
             bit_indices,
             tables: (0..num_tables).map(|_| HashMap::new()).collect(),
             fingerprints: Vec::new(),
@@ -193,16 +204,6 @@ impl SimHashLSH {
         results.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
         results
     }
-
-    /// Number of hash tables.
-    pub fn num_tables(&self) -> usize {
-        self.num_tables
-    }
-
-    /// Number of sampled bits per table.
-    pub fn bits_per_table(&self) -> usize {
-        self.bits_per_table
-    }
 }
 
 fn extract_bits(v: u64, bit_indices: &[usize]) -> u64 {
@@ -216,14 +217,15 @@ fn extract_bits(v: u64, bit_indices: &[usize]) -> u64 {
 }
 
 /// Random-projection LSH over dense vectors.
+///
+/// Uses multi-table hashing with a two-phase lifecycle: add vectors, then build, then search.
+/// For incremental insertion without a build step, see [`DenseSimHashLSH`](crate::DenseSimHashLSH).
 #[derive(Debug, Clone)]
 pub struct LSHParams {
     /// Number of hash tables.
     pub num_tables: usize,
     /// Number of random hyperplanes per table.
     pub num_functions: usize,
-    /// Target number of candidates to verify (not currently enforced; kept for API shape).
-    pub num_candidates: usize,
 }
 
 impl Default for LSHParams {
@@ -231,12 +233,15 @@ impl Default for LSHParams {
         Self {
             num_tables: 10,
             num_functions: 10,
-            num_candidates: 100,
         }
     }
 }
 
 /// A minimal random-projection LSH index.
+///
+/// Two-phase lifecycle: call [`add`](Self::add) to insert vectors, then
+/// [`build`](Self::build) to construct hash tables, then [`search`](Self::search) to query.
+/// For incremental insertion without a build step, see [`DenseSimHashLSH`](crate::DenseSimHashLSH).
 #[derive(Debug)]
 pub struct LSHIndex {
     dimension: usize,
@@ -271,7 +276,7 @@ impl LSHIndex {
     }
 
     /// Add a vector (before calling [`Self::build`]).
-    pub fn add(&mut self, _doc_id: u32, vector: Vec<f32>) -> Result<(), Error> {
+    pub fn add(&mut self, vector: Vec<f32>) -> Result<(), Error> {
         if self.built {
             return Err(Error::AddAfterBuild);
         }
@@ -280,6 +285,9 @@ impl LSHIndex {
                 expected: self.dimension,
                 got: vector.len(),
             });
+        }
+        if !all_finite(&vector) {
+            return Err(Error::NonFiniteInput);
         }
         self.vectors.extend_from_slice(&vector);
         self.num_vectors += 1;
@@ -296,14 +304,6 @@ impl LSHIndex {
         }
 
         // Deterministic hyperplanes: stable across runs for the same params.
-        fn next_f32(state: &mut u64) -> f32 {
-            *state = state
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            let u = (*state >> 16) as u32;
-            (u as f32 / u32::MAX as f32) * 2.0 - 1.0
-        }
-
         let mut rng_state = 0x9E3779B97F4A7C15u64
             ^ (self.dimension as u64)
             ^ ((self.params.num_tables as u64) << 32)
@@ -312,7 +312,7 @@ impl LSHIndex {
         self.hash_functions = (0..total_functions)
             .map(|_| {
                 (0..self.dimension)
-                    .map(|_| next_f32(&mut rng_state))
+                    .map(|_| lcg_f32(&mut rng_state))
                     .collect()
             })
             .collect();
@@ -354,6 +354,9 @@ impl LSHIndex {
                 expected: self.dimension,
                 got: query.len(),
             });
+        }
+        if !all_finite(query) {
+            return Err(Error::NonFiniteInput);
         }
         if k == 0 {
             return Ok(Vec::new());
@@ -423,7 +426,7 @@ mod tests {
 
     #[test]
     fn simhash_lsh_smoke() {
-        let sh = SimHash::new(42);
+        let sh = SimHash::new();
         let mut ix = SimHashLSH::new(8, 8).unwrap();
         let fp1 = sh.fingerprint_weighted(&[(1, 1.0)]);
         let fp2 = sh.fingerprint_weighted(&[(2, 1.0)]);
@@ -435,8 +438,8 @@ mod tests {
     #[test]
     fn random_projection_lsh_smoke() {
         let mut ix = LSHIndex::new(2, LSHParams::default()).unwrap();
-        ix.add(0, vec![1.0, 0.0]).unwrap();
-        ix.add(1, vec![0.9, 0.1]).unwrap();
+        ix.add(vec![1.0, 0.0]).unwrap();
+        ix.add(vec![0.9, 0.1]).unwrap();
         ix.build().unwrap();
         let r = ix.search(&[1.0, 0.0], 2).unwrap();
         assert!(!r.is_empty());

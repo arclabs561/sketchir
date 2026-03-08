@@ -3,8 +3,6 @@
 //! SimHash (Charikar, 2002) maps weighted feature vectors to a fixed-width bitstring such that
 //! similar items have small Hamming distance.
 
-use rand::{RngCore, SeedableRng};
-
 /// A SimHash fingerprint (64-bit).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SimHashFingerprint(pub u64);
@@ -17,15 +15,15 @@ impl SimHashFingerprint {
 }
 
 /// SimHash generator.
+///
+/// Stateless: `fingerprint_weighted` is a pure function of its inputs.
 #[derive(Debug, Clone)]
-pub struct SimHash {
-    seed: u64,
-}
+pub struct SimHash;
 
 impl SimHash {
-    /// Create a SimHash generator with a fixed seed (deterministic).
-    pub fn new(seed: u64) -> Self {
-        Self { seed }
+    /// Create a SimHash generator.
+    pub fn new() -> Self {
+        Self
     }
 
     /// Fingerprint a bag of (feature_hash, weight) pairs.
@@ -54,12 +52,10 @@ impl SimHash {
         }
         SimHashFingerprint(out)
     }
+}
 
-    /// A tiny helper to generate random hyperplane-like feature hashes for demos/tests.
-    ///
-    /// Not a general-purpose hashing API.
-    pub fn demo_random_feature_hashes(&self, n: usize) -> Vec<u64> {
-        let mut rng = rand::rngs::StdRng::seed_from_u64(self.seed);
-        (0..n).map(|_| rng.next_u64()).collect()
+impl Default for SimHash {
+    fn default() -> Self {
+        Self::new()
     }
 }

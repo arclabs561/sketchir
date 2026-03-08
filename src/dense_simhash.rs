@@ -1,8 +1,11 @@
 //! Dense-vector SimHash and an embedding LSH index.
 //!
-//! This is a small, deterministic helper for producing candidate sets from embedding vectors:
+//! Produces candidate sets from embedding vectors:
 //! - map an embedding to a 64-bit SimHash fingerprint using fixed random hyperplanes
 //! - bucket by fingerprint (plus Hamming-1 neighbors) to get a candidate set
+//!
+//! Supports incremental insertion (no build step). For batch indexing with multi-table
+//! hashing, see [`LSHIndex`](crate::LSHIndex).
 //!
 //! Scope: primitives for *candidate generation*. Downstream policy (thresholding, scoring,
 //! clustering) belongs in the caller.
@@ -10,10 +13,11 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::lsh::Error;
+use crate::{all_finite, lcg_f32};
 
 /// Deterministic SimHash for dense vectors using fixed random hyperplanes.
 #[derive(Debug)]
-pub struct DenseSimHash {
+pub(crate) struct DenseSimHash {
     embedding_dim: usize,
     num_bits: usize,
     hyperplanes: Vec<Vec<f32>>,
@@ -23,7 +27,7 @@ impl DenseSimHash {
     /// Create a new DenseSimHash generator.
     ///
     /// `num_bits` is capped at 64.
-    pub fn new(embedding_dim: usize, num_bits: usize) -> Result<Self, Error> {
+    pub(crate) fn new(embedding_dim: usize, num_bits: usize) -> Result<Self, Error> {
         if embedding_dim == 0 {
             return Err(Error::InvalidParam("embedding_dim must be >= 1"));
         }
@@ -37,9 +41,7 @@ impl DenseSimHash {
         for _ in 0..num_bits.min(64) {
             let mut plane = Vec::with_capacity(embedding_dim);
             for _ in 0..embedding_dim {
-                rng_state = rng_state.wrapping_mul(0x5DEECE66D).wrapping_add(0xB);
-                let val = ((rng_state >> 16) as f32 / u32::MAX as f32) * 2.0 - 1.0;
-                plane.push(val);
+                plane.push(lcg_f32(&mut rng_state));
             }
             hyperplanes.push(plane);
         }
@@ -52,12 +54,15 @@ impl DenseSimHash {
     }
 
     /// Compute a 64-bit SimHash fingerprint for an embedding.
-    pub fn fingerprint(&self, embedding: &[f32]) -> Result<u64, Error> {
+    pub(crate) fn fingerprint(&self, embedding: &[f32]) -> Result<u64, Error> {
         if embedding.len() != self.embedding_dim {
             return Err(Error::DimensionMismatch {
                 expected: self.embedding_dim,
                 got: embedding.len(),
             });
+        }
+        if !all_finite(embedding) {
+            return Err(Error::NonFiniteInput);
         }
 
         let mut hash = 0u64;
@@ -71,22 +76,21 @@ impl DenseSimHash {
     }
 
     /// Number of bits used in the fingerprint.
-    pub fn num_bits(&self) -> usize {
+    pub(crate) fn num_bits(&self) -> usize {
         self.num_bits
-    }
-
-    /// Embedding dimension expected by this generator.
-    pub fn embedding_dim(&self) -> usize {
-        self.embedding_dim
     }
 }
 
 /// A minimal embedding LSH index using DenseSimHash fingerprints.
+///
+/// Supports incremental insertion (no build step). Queries return exact-bucket collisions
+/// plus Hamming-distance-1 neighbors. For batch indexing with multi-table hashing,
+/// see [`LSHIndex`](crate::LSHIndex).
 #[derive(Debug)]
 pub struct DenseSimHashLSH {
     simhash: DenseSimHash,
     buckets: HashMap<u64, Vec<usize>>,
-    items: Vec<(String, Vec<f32>)>,
+    ids: Vec<String>,
 }
 
 impl DenseSimHashLSH {
@@ -95,23 +99,16 @@ impl DenseSimHashLSH {
         Ok(Self {
             simhash: DenseSimHash::new(embedding_dim, num_bits)?,
             buckets: HashMap::new(),
-            items: Vec::new(),
+            ids: Vec::new(),
         })
     }
 
     /// Insert an embedding vector and return its assigned index.
-    pub fn insert(&mut self, id: impl Into<String>, embedding: Vec<f32>) -> Result<usize, Error> {
-        if embedding.len() != self.simhash.embedding_dim() {
-            return Err(Error::DimensionMismatch {
-                expected: self.simhash.embedding_dim(),
-                got: embedding.len(),
-            });
-        }
-
-        let idx = self.items.len();
-        let fp = self.simhash.fingerprint(&embedding)?;
+    pub fn insert(&mut self, id: impl Into<String>, embedding: &[f32]) -> Result<usize, Error> {
+        let idx = self.ids.len();
+        let fp = self.simhash.fingerprint(embedding)?;
         self.buckets.entry(fp).or_default().push(idx);
-        self.items.push((id.into(), embedding));
+        self.ids.push(id.into());
         Ok(idx)
     }
 
@@ -133,24 +130,24 @@ impl DenseSimHashLSH {
             }
         }
 
-        Ok(candidates.into_iter().collect())
+        let mut v: Vec<usize> = candidates.into_iter().collect();
+        v.sort_unstable();
+        Ok(v)
     }
 
-    /// Get item by index.
-    pub fn get(&self, idx: usize) -> Option<(&str, &[f32])> {
-        self.items
-            .get(idx)
-            .map(|(id, emb)| (id.as_str(), emb.as_slice()))
+    /// Get the external ID for an item by index.
+    pub fn get_id(&self, idx: usize) -> Option<&str> {
+        self.ids.get(idx).map(|s| s.as_str())
     }
 
     /// Number of items indexed.
     pub fn len(&self) -> usize {
-        self.items.len()
+        self.ids.len()
     }
 
     /// True if empty.
     pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
+        self.ids.is_empty()
     }
 }
 
@@ -165,9 +162,9 @@ mod tests {
         let v2: Vec<f32> = (0..8).map(|i| (i as f32).sin() + 0.01).collect();
         let v3: Vec<f32> = (0..8).map(|i| (i as f32).cos()).collect();
 
-        lsh.insert("1", v1.clone()).unwrap();
-        lsh.insert("2", v2).unwrap();
-        lsh.insert("3", v3).unwrap();
+        lsh.insert("1", &v1).unwrap();
+        lsh.insert("2", &v2).unwrap();
+        lsh.insert("3", &v3).unwrap();
 
         let candidates = lsh.query(&v1).unwrap();
         assert!(!candidates.is_empty());
