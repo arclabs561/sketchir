@@ -10,7 +10,7 @@ homepage = "https://github.com/arclabs561/sketchir"
 documentation = "https://docs.rs/sketchir"
 readme = "README.md"
 publish = true
-keywords = ["minhash", "simhash", "lsh", "information-retrieval"]
+keywords = ["minhash", "simhash", "lsh", "info-retrieval"]
 categories = ["text-processing", "algorithms"]
 
 [dependencies]
