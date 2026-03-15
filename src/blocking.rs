@@ -28,8 +28,9 @@
 
 use std::collections::HashSet;
 
-use crate::lsh::{Error, MinHashLSH};
+use crate::lsh::MinHashLSH;
 use crate::minhash::{MinHash, MinHashSignature};
+use crate::Error;
 
 /// Configuration for MinHash-based text blocking.
 #[derive(Debug, Clone)]
@@ -38,7 +39,7 @@ pub struct BlockingConfig {
     pub num_hashes_per_band: usize,
     /// Number of bands (higher = more candidates, better recall).
     pub num_bands: usize,
-    /// N-gram size for text shingling.
+    /// N-gram size for text shingling. Must be >= 1.
     pub ngram_size: usize,
     /// Whether to use character n-grams (vs word n-grams).
     pub char_ngrams: bool,
@@ -77,8 +78,8 @@ impl BlockingConfig {
     /// Estimate the probability that two items with given Jaccard similarity
     /// will be placed in the same bucket (i.e., become candidates).
     ///
-    /// \(P(\text{candidate}) = 1 - (1 - s^r)^b\)
-    /// where \(s\) is similarity, \(r\) is `num_hashes_per_band`, and \(b\) is `num_bands`.
+    /// `P(candidate) = 1 - (1 - s^r)^b`
+    /// where `s` is similarity, `r` is `num_hashes_per_band`, and `b` is `num_bands`.
     pub fn candidate_probability(&self, jaccard_similarity: f64) -> f64 {
         let s = jaccard_similarity;
         let r = self.num_hashes_per_band as f64;
@@ -89,11 +90,9 @@ impl BlockingConfig {
 
 /// A text item stored in the index.
 #[derive(Debug, Clone)]
-pub struct TextItem {
+pub(crate) struct TextItem {
     /// External identifier.
-    pub id: String,
-    /// The raw text content.
-    pub text: String,
+    id: String,
     signature: MinHashSignature,
 }
 
@@ -109,6 +108,10 @@ pub struct MinHashTextLSH {
 impl MinHashTextLSH {
     /// Create a new MinHashTextLSH.
     pub fn new(config: BlockingConfig) -> Result<Self, Error> {
+        if config.ngram_size == 0 {
+            return Err(Error::InvalidParam("ngram_size must be >= 1"));
+        }
+
         let total_hashes = config
             .num_bands
             .checked_mul(config.num_hashes_per_band)
@@ -116,7 +119,7 @@ impl MinHashTextLSH {
                 "num_bands * num_hashes_per_band overflow",
             ))?;
 
-        let minhash = MinHash::new(total_hashes);
+        let minhash = MinHash::new(total_hashes)?;
         let index = MinHashLSH::new(config.num_bands, config.num_hashes_per_band)?;
 
         Ok(Self {
@@ -128,25 +131,29 @@ impl MinHashTextLSH {
     }
 
     /// Insert a new text item.
-    pub fn insert_text(&mut self, id: impl Into<String>, text: impl Into<String>) {
+    pub fn insert_text(&mut self, id: impl Into<String>, text: impl AsRef<str>) {
         let id = id.into();
-        let text = text.into();
 
-        let shingles = shingle(&text, self.config.ngram_size, self.config.char_ngrams);
+        let shingles = shingle(
+            text.as_ref(),
+            self.config.ngram_size,
+            self.config.char_ngrams,
+        );
         let signature = self.minhash.signature(&shingles);
 
-        let doc_id = self.index.insert(signature.clone());
+        // Safety: signature length is guaranteed to match by construction
+        // (MinHash and MinHashLSH were created with the same total_hashes).
+        let doc_id = self
+            .index
+            .insert(signature.clone())
+            .expect("signature length matches by construction");
         debug_assert_eq!(
             doc_id,
             self.items.len(),
             "doc_id should follow insertion order"
         );
 
-        self.items.push(TextItem {
-            id,
-            text,
-            signature,
-        });
+        self.items.push(TextItem { id, signature });
     }
 
     /// Query for candidate indices that collide with `text` in any bucket.
@@ -156,7 +163,7 @@ impl MinHashTextLSH {
         self.index.query(&signature)
     }
 
-    /// Get all candidate pairs.
+    /// Get all candidate pairs (sorted for deterministic output).
     pub fn candidate_pairs(&self) -> Vec<(usize, usize)> {
         let mut pairs: HashSet<(usize, usize)> = HashSet::new();
 
@@ -170,19 +177,21 @@ impl MinHashTextLSH {
             }
         }
 
-        pairs.into_iter().collect()
+        let mut v: Vec<(usize, usize)> = pairs.into_iter().collect();
+        v.sort_unstable();
+        v
     }
 
     /// Estimated similarity from MinHash signatures.
     pub fn estimated_similarity(&self, i: usize, j: usize) -> Option<f64> {
         let a = self.items.get(i)?;
         let b = self.items.get(j)?;
-        Some(a.signature.jaccard(&b.signature))
+        a.signature.jaccard(&b.signature)
     }
 
-    /// Get the item at a given index.
-    pub fn get(&self, idx: usize) -> Option<&TextItem> {
-        self.items.get(idx)
+    /// Get the external ID of the item at a given index.
+    pub fn get_id(&self, idx: usize) -> Option<&str> {
+        self.items.get(idx).map(|item| item.id.as_str())
     }
 
     /// Number of items indexed.
@@ -197,10 +206,11 @@ impl MinHashTextLSH {
 }
 
 fn shingle(text: &str, n: usize, char_ngrams: bool) -> HashSet<String> {
+    debug_assert!(
+        n >= 1,
+        "ngram_size must be >= 1 (validated at construction)"
+    );
     let normalized = text.to_lowercase();
-    if n == 0 {
-        return HashSet::new();
-    }
 
     if char_ngrams {
         let chars: Vec<char> = normalized.chars().collect();
@@ -239,5 +249,34 @@ mod tests {
         lsh.insert_text("2", "New York");
         let sim = lsh.estimated_similarity(0, 1).unwrap();
         assert!((sim - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn candidate_pairs_are_sorted() {
+        let mut lsh = MinHashTextLSH::new(BlockingConfig::default()).unwrap();
+        lsh.insert_text("a", "hello world foo bar");
+        lsh.insert_text("b", "hello world foo bar");
+        lsh.insert_text("c", "hello world foo bar");
+        let pairs = lsh.candidate_pairs();
+        let mut sorted = pairs.clone();
+        sorted.sort_unstable();
+        assert_eq!(pairs, sorted);
+    }
+
+    #[test]
+    fn rejects_zero_ngram_size() {
+        let cfg = BlockingConfig {
+            ngram_size: 0,
+            ..Default::default()
+        };
+        assert!(MinHashTextLSH::new(cfg).is_err());
+    }
+
+    #[test]
+    fn get_id_returns_inserted_id() {
+        let mut lsh = MinHashTextLSH::new(BlockingConfig::default()).unwrap();
+        lsh.insert_text("my-id", "some text");
+        assert_eq!(lsh.get_id(0), Some("my-id"));
+        assert_eq!(lsh.get_id(1), None);
     }
 }

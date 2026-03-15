@@ -14,48 +14,55 @@ impl SimHashFingerprint {
     }
 }
 
-/// SimHash generator.
+/// Fingerprint a bag of `(feature_hash, weight)` pairs.
 ///
-/// Stateless: `fingerprint_weighted` is a pure function of its inputs.
-#[derive(Debug, Clone)]
-pub struct SimHash;
-
-impl SimHash {
-    /// Create a SimHash generator.
-    pub fn new() -> Self {
-        Self
-    }
-
-    /// Fingerprint a bag of (feature_hash, weight) pairs.
-    ///
-    /// `feature_hash` is assumed to be a 64-bit hash of the feature.
-    pub fn fingerprint_weighted(&self, features: &[(u64, f32)]) -> SimHashFingerprint {
-        let mut acc = [0f32; 64];
-        for (h, w) in features {
-            let bits = *h;
-            #[allow(clippy::needless_range_loop)]
-            for i in 0..64 {
-                let bit = (bits >> i) & 1;
-                if bit == 1 {
-                    acc[i] += *w;
-                } else {
-                    acc[i] -= *w;
-                }
-            }
-        }
-        let mut out = 0u64;
+/// `feature_hash` is assumed to be a 64-bit hash of the feature.
+/// This is a pure function -- no state required.
+pub fn simhash_fingerprint(features: &[(u64, f32)]) -> SimHashFingerprint {
+    let mut acc = [0f32; 64];
+    for (h, w) in features {
+        let bits = *h;
         #[allow(clippy::needless_range_loop)]
         for i in 0..64 {
-            if acc[i] > 0.0 {
-                out |= 1u64 << i;
+            let bit = (bits >> i) & 1;
+            if bit == 1 {
+                acc[i] += *w;
+            } else {
+                acc[i] -= *w;
             }
         }
-        SimHashFingerprint(out)
     }
+    let mut out = 0u64;
+    #[allow(clippy::needless_range_loop)]
+    for i in 0..64 {
+        if acc[i] > 0.0 {
+            out |= 1u64 << i;
+        }
+    }
+    SimHashFingerprint(out)
 }
 
-impl Default for SimHash {
-    fn default() -> Self {
-        Self::new()
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // DETERMINISM CANARY
+    #[test]
+    fn simhash_fingerprint_determinism() {
+        let fp = simhash_fingerprint(&[(0xDEADBEEF, 1.0), (0xCAFEBABE, 0.5)]);
+        assert_eq!(fp.0, 3735928559);
+    }
+
+    #[test]
+    fn identical_features_zero_distance() {
+        let fp1 = simhash_fingerprint(&[(1, 1.0), (2, 1.0)]);
+        let fp2 = simhash_fingerprint(&[(1, 1.0), (2, 1.0)]);
+        assert_eq!(fp1.hamming_distance(&fp2), 0);
+    }
+
+    #[test]
+    fn empty_features_produce_zero_fingerprint() {
+        let fp = simhash_fingerprint(&[]);
+        assert_eq!(fp.0, 0);
     }
 }

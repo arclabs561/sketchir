@@ -6,14 +6,6 @@
 
 Sketching primitives for IR: MinHash/SimHash/LSH-style signatures.
 
-## Tuning Knobs
-
-| Param | Typical | Tradeoff |
-|---|---|---|
-| `ngram_size` | 3-9 chars | Smaller = more sensitive to noise; Larger = stricter. |
-| `num_bands * num_hashes_per_band` | 100-256 | More = better Jaccard estimation, higher storage. |
-| `num_bands` | 20-50 | Controls recall/precision curve (S-curve). |
-
 ## What it is
 
 `sketchir` is the index-only layer for:
@@ -25,7 +17,16 @@ Sketching primitives for IR: MinHash/SimHash/LSH-style signatures.
 
 - **Near-duplicate detection**: `MinHashTextLSH` + `BlockingConfig`
 - **SimHash fingerprints**: `SimHashFingerprint` / `SimHashLSH`
-- **Generic LSH interface**: `LSHIndex`
+- **Dense-vector LSH (batch)**: `LSHIndex` -- multi-table random projection, add/build/search lifecycle
+- **Dense-vector LSH (incremental)**: `DenseSimHashLSH` -- SimHash + Hamming-1 probing, no build step
+
+## Tuning knobs (`BlockingConfig`)
+
+| Param | Typical | Tradeoff |
+|---|---|---|
+| `ngram_size` | 3-9 chars | Smaller = more sensitive to noise; Larger = stricter. |
+| `num_bands * num_hashes_per_band` | 100-256 | More = better Jaccard estimation, higher storage. |
+| `num_bands` | 20-50 | Controls recall/precision curve (S-curve). |
 
 ## Example (MinHash blocking)
 

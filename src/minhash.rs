@@ -1,72 +1,46 @@
 //! MinHash for Jaccard similarity estimation.
 //!
-//! MinHash provides locality-sensitive hashing for set similarity by estimating:
-//! \(J(A,B) = |A ∩ B| / |A ∪ B|\).
+//! MinHash provides locality-sensitive hashing for set similarity by estimating
+//! `J(A,B) = |A & B| / |A | B|`.
 
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 
-use crate::lcg_next;
-
-/// A small stable 64-bit FNV-1a hasher.
-///
-/// This avoids relying on `std`'s `DefaultHasher` stability guarantees.
-pub(crate) struct Fnv1a64 {
-    state: u64,
-}
-
-impl Fnv1a64 {
-    pub(crate) fn new() -> Self {
-        // FNV offset basis
-        Self {
-            state: 0xcbf29ce484222325,
-        }
-    }
-}
-
-impl Hasher for Fnv1a64 {
-    fn finish(&self) -> u64 {
-        self.state
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        // FNV-1a
-        const PRIME: u64 = 0x00000100000001B3;
-        for &b in bytes {
-            self.state ^= b as u64;
-            self.state = self.state.wrapping_mul(PRIME);
-        }
-    }
-}
+use crate::{lcg_next, Error, Fnv1a64};
 
 /// MinHash signature generator.
 #[derive(Debug, Clone)]
 pub struct MinHash {
-    /// Number of hash functions (signature length).
-    num_hashes: usize,
     /// Seeds for hash functions.
     seeds: Vec<u64>,
 }
 
 impl MinHash {
     /// Create a new MinHash with `num_hashes` hash functions, using a fixed seed.
-    pub fn new(num_hashes: usize) -> Self {
+    ///
+    /// `num_hashes` must be >= 1.
+    pub fn new(num_hashes: usize) -> Result<Self, Error> {
         Self::with_seed(num_hashes, 42)
     }
 
     /// Create MinHash with a specific seed (deterministic).
-    pub fn with_seed(num_hashes: usize, seed: u64) -> Self {
+    ///
+    /// `num_hashes` must be >= 1.
+    pub fn with_seed(num_hashes: usize, seed: u64) -> Result<Self, Error> {
+        if num_hashes == 0 {
+            return Err(Error::InvalidParam("num_hashes must be >= 1"));
+        }
         let mut seeds = Vec::with_capacity(num_hashes);
         let mut rng_state = seed;
         for _ in 0..num_hashes {
             seeds.push(lcg_next(&mut rng_state));
         }
-        Self { num_hashes, seeds }
+        Ok(Self { seeds })
     }
 
     /// Compute a MinHash signature for a set of items.
     pub fn signature<T: Hash>(&self, items: &HashSet<T>) -> MinHashSignature {
-        let mut mins = vec![u64::MAX; self.num_hashes];
+        let mut mins = vec![u64::MAX; self.seeds.len()];
         for item in items {
             for (i, &seed) in self.seeds.iter().enumerate() {
                 let h = self.hash_with_seed(item, seed);
@@ -99,10 +73,22 @@ impl MinHashSignature {
         &self.values
     }
 
+    /// Number of hash values in the signature.
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    /// True if the signature has no hash values.
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
     /// Estimate Jaccard similarity from two signatures.
-    pub fn jaccard(&self, other: &Self) -> f64 {
+    ///
+    /// Returns `None` if the signatures have different lengths or are empty.
+    pub fn jaccard(&self, other: &Self) -> Option<f64> {
         if self.values.len() != other.values.len() || self.values.is_empty() {
-            return 0.0;
+            return None;
         }
         let matches = self
             .values
@@ -110,6 +96,51 @@ impl MinHashSignature {
             .zip(other.values.iter())
             .filter(|(a, b)| a == b)
             .count();
-        matches as f64 / self.values.len() as f64
+        Some(matches as f64 / self.values.len() as f64)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // DETERMINISM CANARY -- these values must remain stable across versions.
+    // If a change to hashing or PRNG breaks these, the determinism guarantee is violated.
+
+    #[test]
+    fn minhash_signature_determinism() {
+        let mh = MinHash::new(4).unwrap();
+        let items: HashSet<&str> = ["alpha", "beta", "gamma"].into_iter().collect();
+        let sig = mh.signature(&items);
+        assert_eq!(
+            sig.as_slice(),
+            &[
+                5997730903145785187,
+                8107540397845570824,
+                5710066622574848307,
+                548850101144292092,
+            ],
+        );
+    }
+
+    #[test]
+    fn jaccard_identical_signatures() {
+        let mh = MinHash::new(8).unwrap();
+        let items: HashSet<&str> = ["a", "b"].into_iter().collect();
+        let sig = mh.signature(&items);
+        assert_eq!(sig.jaccard(&sig), Some(1.0));
+    }
+
+    #[test]
+    fn jaccard_mismatched_lengths_returns_none() {
+        let s4 = MinHash::new(4).unwrap();
+        let s8 = MinHash::new(8).unwrap();
+        let items: HashSet<&str> = ["x"].into_iter().collect();
+        assert_eq!(s4.signature(&items).jaccard(&s8.signature(&items)), None);
+    }
+
+    #[test]
+    fn new_rejects_zero() {
+        assert!(MinHash::new(0).is_err());
     }
 }
