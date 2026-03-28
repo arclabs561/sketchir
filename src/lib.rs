@@ -23,12 +23,14 @@ pub mod blocking;
 pub mod dense_simhash;
 pub mod lsh;
 pub mod minhash;
+pub mod multibit;
 pub mod simhash;
 
 pub use blocking::{BlockingConfig, MinHashTextLSH};
 pub use dense_simhash::DenseSimHashLSH;
 pub use lsh::{LSHIndex, MinHashLSH, SimHashLSH};
 pub use minhash::{MinHash, MinHashSignature};
+pub use multibit::{MultibitConfig, MultibitLSH};
 pub use simhash::{simhash_fingerprint, SimHashFingerprint};
 
 use std::fmt;
