@@ -4,7 +4,7 @@
 [![Documentation](https://docs.rs/sketchir/badge.svg)](https://docs.rs/sketchir)
 [![CI](https://github.com/arclabs561/sketchir/actions/workflows/ci.yml/badge.svg)](https://github.com/arclabs561/sketchir/actions/workflows/ci.yml)
 
-Sketching primitives for IR: MinHash/SimHash/LSH-style signatures.
+Sketching primitives for IR.
 
 ## What it is
 
