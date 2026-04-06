@@ -13,5 +13,7 @@ publish = true
 keywords = ["minhash", "simhash", "lsh", "info-retrieval"]
 categories = ["text-processing", "algorithms"]
 
+[workspace]
+
 [dependencies]
 
