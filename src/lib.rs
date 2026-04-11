@@ -21,6 +21,7 @@
 
 pub mod blocking;
 pub mod dense_simhash;
+pub mod hyperplane;
 pub mod lsh;
 pub mod minhash;
 pub mod multibit;
@@ -28,6 +29,7 @@ pub mod simhash;
 
 pub use blocking::{BlockingConfig, MinHashTextLSH};
 pub use dense_simhash::DenseSimHashLSH;
+pub use hyperplane::HyperplaneHasher;
 pub use lsh::{LSHIndex, MinHashLSH, SimHashLSH};
 pub use minhash::{MinHash, MinHashSignature};
 pub use multibit::{MultibitConfig, MultibitLSH};
