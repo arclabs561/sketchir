@@ -20,6 +20,7 @@
 #![warn(missing_docs)]
 
 pub mod blocking;
+pub mod cross_polytope;
 pub mod dense_simhash;
 pub mod hyperplane;
 pub mod lsh;
@@ -28,6 +29,7 @@ pub mod multibit;
 pub mod simhash;
 
 pub use blocking::{BlockingConfig, MinHashTextLSH};
+pub use cross_polytope::CrossPolytopeHasher;
 pub use dense_simhash::DenseSimHashLSH;
 pub use hyperplane::HyperplaneHasher;
 pub use lsh::{LSHIndex, MinHashLSH, SimHashLSH};
