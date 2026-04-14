@@ -2,3 +2,6 @@ target/
 **/target/
 .DS_Store
 .claude/scrutinize-report*.md
+
+# Proptest regression files
+**/proptest-regressions/
