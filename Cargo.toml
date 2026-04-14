@@ -17,3 +17,6 @@ categories = ["text-processing", "algorithms"]
 
 [dependencies]
 
+[dev-dependencies]
+proptest = "1"
+
