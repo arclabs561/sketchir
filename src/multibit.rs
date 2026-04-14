@@ -295,7 +295,7 @@ fn quantize_scalar(value: f64, boundaries: &[f64]) -> u32 {
     }
 }
 
-fn dot(a: &[f32], b: &[f32]) -> f32 {
+pub(crate) fn dot(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
 
