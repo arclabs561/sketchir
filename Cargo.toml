@@ -18,5 +18,15 @@ categories = ["text-processing", "algorithms"]
 [dependencies]
 
 [dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
 proptest = "1"
+
+[profile.bench]
+lto = "thin"
+codegen-units = 1
+
+[[bench]]
+name = "hash_bench"
+path = "benches/hash_bench.rs"
+harness = false
 

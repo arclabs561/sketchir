@@ -20,20 +20,24 @@ impl SimHashFingerprint {
 /// This is a pure function -- no state required.
 pub fn simhash_fingerprint(features: &[(u64, f32)]) -> SimHashFingerprint {
     let mut acc = [0f32; 64];
-    for (h, w) in features {
-        let bits = *h;
-        #[allow(clippy::needless_range_loop)]
-        for i in 0..64 {
-            let bit = (bits >> i) & 1;
-            if bit == 1 {
-                acc[i] += *w;
-            } else {
-                acc[i] -= *w;
-            }
+    for &(bits, w) in features {
+        // Branch-free: weight is added as +w or -w based on the bit.
+        // The sign pattern 2*bit-1 is computed without branching.
+        // Unrolled into 4-wide chunks so LLVM can use multiple FP accumulators.
+        let mut i = 0;
+        while i + 3 < 64 {
+            acc[i] += if (bits >> i) & 1 != 0 { w } else { -w };
+            acc[i + 1] += if (bits >> (i + 1)) & 1 != 0 { w } else { -w };
+            acc[i + 2] += if (bits >> (i + 2)) & 1 != 0 { w } else { -w };
+            acc[i + 3] += if (bits >> (i + 3)) & 1 != 0 { w } else { -w };
+            i += 4;
+        }
+        while i < 64 {
+            acc[i] += if (bits >> i) & 1 != 0 { w } else { -w };
+            i += 1;
         }
     }
     let mut out = 0u64;
-    #[allow(clippy::needless_range_loop)]
     for i in 0..64 {
         if acc[i] > 0.0 {
             out |= 1u64 << i;
