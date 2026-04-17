@@ -4,14 +4,13 @@
 [![Documentation](https://docs.rs/sketchir/badge.svg)](https://docs.rs/sketchir)
 [![CI](https://github.com/arclabs561/sketchir/actions/workflows/ci.yml/badge.svg)](https://github.com/arclabs561/sketchir/actions/workflows/ci.yml)
 
-Sketching primitives for IR.
+Sketching primitives for IR: MinHash, SimHash, and LSH indexes for
+near-duplicate detection and approximate similarity search.
 
-## What it is
-
-`sketchir` is the index-only layer for:
-- near-duplicate detection (shingles + MinHash)
-- text fingerprinting (SimHash)
-- approximate similarity candidate generation (LSH)
+```toml
+[dependencies]
+sketchir = "0.3"
+```
 
 ## Best starting points
 
