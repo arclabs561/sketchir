@@ -38,8 +38,8 @@ pub fn simhash_fingerprint(features: &[(u64, f32)]) -> SimHashFingerprint {
         }
     }
     let mut out = 0u64;
-    for i in 0..64 {
-        if acc[i] > 0.0 {
+    for (i, a) in acc.iter().enumerate() {
+        if *a > 0.0 {
             out |= 1u64 << i;
         }
     }

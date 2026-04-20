@@ -12,12 +12,30 @@ use sketchir::{BlockingConfig, MinHashTextLSH};
 
 fn main() {
     let documents = vec![
-        ("original", "The quick brown fox jumps over the lazy dog near the riverbank"),
-        ("minor_edit", "A quick brown fox jumped over the lazy dog near the riverbank"),
-        ("reordered", "Near the riverbank the lazy dog was jumped over by the quick brown fox"),
-        ("different_1", "Machine learning models require large datasets for training"),
-        ("different_2", "The weather forecast predicts rain for the entire week ahead"),
-        ("different_3", "Rust provides memory safety without garbage collection overhead"),
+        (
+            "original",
+            "The quick brown fox jumps over the lazy dog near the riverbank",
+        ),
+        (
+            "minor_edit",
+            "A quick brown fox jumped over the lazy dog near the riverbank",
+        ),
+        (
+            "reordered",
+            "Near the riverbank the lazy dog was jumped over by the quick brown fox",
+        ),
+        (
+            "different_1",
+            "Machine learning models require large datasets for training",
+        ),
+        (
+            "different_2",
+            "The weather forecast predicts rain for the entire week ahead",
+        ),
+        (
+            "different_3",
+            "Rust provides memory safety without garbage collection overhead",
+        ),
     ];
 
     let cfg = BlockingConfig {
@@ -40,10 +58,7 @@ fn main() {
         println!("  (none found)");
     }
     for (i, j) in &pairs {
-        println!(
-            "  {:?} <-> {:?}",
-            documents[*i].0, documents[*j].0
-        );
+        println!("  {:?} <-> {:?}", documents[*i].0, documents[*j].0);
     }
 
     // Dedup: keep the first document from each duplicate pair.
