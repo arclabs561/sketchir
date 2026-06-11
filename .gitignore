@@ -6,3 +6,4 @@ target/
 # Proptest regression files
 **/proptest-regressions/
 Cargo.lock
+/semver-checks/
