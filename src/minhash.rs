@@ -95,7 +95,7 @@ impl MinHashSignature {
         // differing-slot count is an agnostic primitive. With the `innr`
         // feature it dispatches to SIMD; otherwise it is the scalar loop.
         #[cfg(feature = "innr")]
-        let differing = innr::slot_hamming(&self.values, &other.values);
+        let differing = innr::slot_hamming_u64(&self.values, &other.values) as usize;
         #[cfg(not(feature = "innr"))]
         let differing = self
             .values
