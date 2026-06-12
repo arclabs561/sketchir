@@ -106,11 +106,23 @@ impl HyperplaneHasher {
     /// Both signatures must have the same byte length; otherwise the result
     /// counts only the overlapping bytes.
     pub fn distance(sig_a: &[u8], sig_b: &[u8]) -> u32 {
-        sig_a
-            .iter()
-            .zip(sig_b.iter())
-            .map(|(a, b)| (a ^ b).count_ones())
-            .sum()
+        // bit-Hamming over byte-packed signatures. With `innr` it dispatches
+        // to SIMD popcount; otherwise scalar XOR+popcount. Slice to the
+        // shorter length first to keep the documented overlapping-bytes
+        // behavior (innr::hamming_distance asserts equal length).
+        #[cfg(feature = "innr")]
+        {
+            let n = sig_a.len().min(sig_b.len());
+            innr::hamming_distance(&sig_a[..n], &sig_b[..n])
+        }
+        #[cfg(not(feature = "innr"))]
+        {
+            sig_a
+                .iter()
+                .zip(sig_b.iter())
+                .map(|(a, b)| (a ^ b).count_ones())
+                .sum()
+        }
     }
 
     /// Estimate cosine similarity from the Hamming distance of two signatures.

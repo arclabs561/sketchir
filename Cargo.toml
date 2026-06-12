@@ -15,7 +15,14 @@ categories = ["text-processing", "algorithms"]
 
 [workspace]
 
+[features]
+# SIMD slot-Hamming / bit-Hamming via innr (runtime AVX-512/AVX2/NEON). Off by
+# default so the scalar fallback keeps MSRV 1.80; innr raises the x86_64 MSRV
+# to 1.89 (AVX-512 intrinsics) when enabled.
+innr = ["dep:innr"]
+
 [dependencies]
+innr = { version = "0.6", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

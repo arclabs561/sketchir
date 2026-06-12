@@ -90,13 +90,20 @@ impl MinHashSignature {
         if self.values.len() != other.values.len() || self.values.is_empty() {
             return None;
         }
-        let matches = self
+        let len = self.values.len();
+        // The estimator (matches/len) is the domain meaning and lives here; the
+        // differing-slot count is an agnostic primitive. With the `innr`
+        // feature it dispatches to SIMD; otherwise it is the scalar loop.
+        #[cfg(feature = "innr")]
+        let differing = innr::slot_hamming(&self.values, &other.values);
+        #[cfg(not(feature = "innr"))]
+        let differing = self
             .values
             .iter()
             .zip(other.values.iter())
-            .filter(|(a, b)| a == b)
+            .filter(|(a, b)| a != b)
             .count();
-        Some(matches as f64 / self.values.len() as f64)
+        Some((len - differing) as f64 / len as f64)
     }
 }
 
