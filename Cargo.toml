@@ -20,8 +20,11 @@ categories = ["text-processing", "algorithms"]
 # default so the scalar fallback keeps MSRV 1.80; innr raises the x86_64 MSRV
 # to 1.89 (AVX-512 intrinsics) when enabled.
 innr = ["dep:innr"]
+# Optional serde derives on signatures/generators (persist build-once artifacts).
+serde = ["dep:serde"]
 
 [dependencies]
+serde = { version = "1.0", optional = true, features = ["derive"] }
 innr = { version = "0.6", optional = true }
 
 [dev-dependencies]

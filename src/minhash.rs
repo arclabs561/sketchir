@@ -10,6 +10,7 @@ use crate::{lcg_next, Error, Fnv1a64};
 
 /// MinHash signature generator.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MinHash {
     /// Seeds for hash functions.
     seeds: Vec<u64>,
@@ -62,6 +63,7 @@ impl MinHash {
 
 /// A MinHash signature (fingerprint) of a set.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MinHashSignature {
     /// The min-hash values for each hash function.
     pub(crate) values: Vec<u64>,
