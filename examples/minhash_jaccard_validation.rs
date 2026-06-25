@@ -56,7 +56,7 @@ fn main() {
         let n_pairs = 40;
         for salt in 0..n_pairs {
             let overlap = (salt * 25) % 1000; // vary true Jaccard across pairs
-            let (a, b) = pair(1000, overlap, salt as u64 + 1);
+            let (a, b) = pair(1000, overlap, salt + 1);
             let exact = exact_jaccard(&a, &b);
             let est = mh.signature(&a).jaccard(&mh.signature(&b)).unwrap();
             err += (est - exact).abs();
