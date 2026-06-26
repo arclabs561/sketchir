@@ -41,6 +41,13 @@ let pairs = index.candidate_pairs();
 assert!(!pairs.is_empty());
 ```
 
+## Examples
+
+Runnable examples live in [`examples/`](examples/):
+
+- `dedup_documents` indexes a document set and returns candidate near-duplicate pairs via MinHash LSH blocking, the corpus-hygiene use (the engine behind a dedup tool like siftr).
+- `minhash_jaccard_validation` checks the MinHash Jaccard estimate against the exact Jaccard index, confirming the sketch is accurate before trusting it at scale.
+
 ## License
 
 MIT OR Apache-2.0
