@@ -28,6 +28,10 @@ pub mod minhash;
 pub mod multibit;
 pub mod simhash;
 
+/// Updatable, durable index backed by segstore (the optional `store` feature).
+#[cfg(feature = "store")]
+pub mod store;
+
 pub use blocking::{BlockingConfig, MinHashTextLSH};
 pub use cross_polytope::CrossPolytopeHasher;
 pub use dense_simhash::DenseSimHashLSH;
