@@ -48,6 +48,14 @@ Runnable examples live in [`examples/`](examples/):
 - `dedup_documents` indexes a document set and returns candidate near-duplicate pairs via MinHash LSH blocking, the corpus-hygiene use (the engine behind a dedup tool like siftr).
 - `minhash_jaccard_validation` checks the MinHash Jaccard estimate against the exact Jaccard index, confirming the sketch is accurate before trusting it at scale.
 
+## Updatable index (`store` feature)
+
+`store::UpdatableIndex` wraps the MinHash near-duplicate index in a durable,
+segmented store ([`segstore`](https://crates.io/crates/segstore)): incremental
+add/delete, a write-ahead log, checkpoint, compaction, and crash recovery. The
+per-segment LSH blocks are cached and rebuilt only on mutation, not per query.
+Opt-in; the default build does not depend on segstore.
+
 ## License
 
 MIT OR Apache-2.0

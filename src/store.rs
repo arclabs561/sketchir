@@ -6,11 +6,15 @@
 //! compaction, and the blocking index survives a restart.
 //!
 //! Each segment stores the source `(id, text)` pairs; a real `MinHashTextLSH`
-//! over the live documents of each segment answers a query. Because the LSH
-//! returns insertion-order indices rather than the caller's ids, this maps them
-//! back through a per-segment id vector. The `BlockingConfig` is a query-time
-//! parameter (not persisted), so it is supplied at [`UpdatableIndex::open`].
+//! over the live documents of each segment is built and **cached**, rebuilt only
+//! when the index is mutated (an add that seals a segment, a delete, or a
+//! compaction), not on every query. The small unflushed buffer is built per
+//! query. Because the LSH returns insertion-order indices rather than the
+//! caller's ids, each cached index carries a parallel id vector to map them back.
+//! The `BlockingConfig` is a query-time parameter (not persisted), so it is
+//! supplied at [`UpdatableIndex::open`].
 
+use std::cell::RefCell;
 use std::sync::Arc;
 
 use durability::{Directory, PersistenceResult};
@@ -19,7 +23,7 @@ use segstore::{SegmentedStore, Store};
 use crate::{BlockingConfig, MinHashTextLSH};
 
 /// segstore payload: items are document texts, a segment is a batch of source
-/// texts (the LSH is rebuilt from the live ones per query).
+/// texts (the LSH is built + cached from the live ones).
 struct TextBacking;
 
 impl Store for TextBacking {
@@ -44,10 +48,22 @@ impl Store for TextBacking {
     }
 }
 
+/// A built per-segment LSH plus the insertion-order id map needed to translate
+/// its results back to caller ids.
+type Block = (MinHashTextLSH, Vec<u32>);
+
+/// Cached per-segment LSH blocks, valid for a given mutation generation.
+struct Cache {
+    generation: u64,
+    segments: Vec<Option<Block>>,
+}
+
 /// An updatable, durable MinHash near-duplicate index.
 pub struct UpdatableIndex {
     inner: SegmentedStore<TextBacking>,
     config: BlockingConfig,
+    generation: u64,
+    cache: RefCell<Cache>,
 }
 
 impl UpdatableIndex {
@@ -62,22 +78,33 @@ impl UpdatableIndex {
         Ok(Self {
             inner: SegmentedStore::open(dir, TextBacking, flush_threshold)?,
             config,
+            generation: 0,
+            cache: RefCell::new(Cache {
+                generation: u64::MAX,
+                segments: Vec::new(),
+            }),
         })
     }
 
     /// Add (or re-add) a document by id.
     pub fn add(&mut self, id: u32, text: impl Into<String>) -> PersistenceResult<()> {
-        self.inner.add(id, text.into())
+        self.inner.add(id, text.into())?;
+        self.generation += 1;
+        Ok(())
     }
 
     /// Tombstone a document.
     pub fn delete(&mut self, id: u32) -> PersistenceResult<()> {
-        self.inner.delete(id)
+        self.inner.delete(id)?;
+        self.generation += 1;
+        Ok(())
     }
 
     /// Merge segments (dropping tombstoned docs) and persist a checkpoint.
     pub fn compact(&mut self) -> PersistenceResult<()> {
-        self.inner.compact()
+        self.inner.compact()?;
+        self.generation += 1;
+        Ok(())
     }
 
     /// Persist a checkpoint without merging.
@@ -88,21 +115,41 @@ impl UpdatableIndex {
     /// Document ids that are near-duplicate candidates of `text`, unioned over
     /// every live document.
     pub fn near_duplicates(&self, text: &str) -> Vec<u32> {
+        self.refresh_cache();
         let mut out: Vec<u32> = Vec::new();
-        for seg in self.inner.segments() {
-            out.extend(self.candidates_in(seg, text));
+        {
+            let cache = self.cache.borrow();
+            for block in cache.segments.iter().flatten() {
+                out.extend(query_block(block, text));
+            }
         }
         let buffered = self.inner.buffer().to_vec();
-        out.extend(self.candidates_in(&buffered, text));
+        if let Some(block) = self.build_live_index(&buffered) {
+            out.extend(query_block(&block, text));
+        }
         out.sort_unstable();
         out.dedup();
         out
     }
 
-    fn candidates_in(&self, batch: &[(u32, String)], text: &str) -> Vec<u32> {
+    fn refresh_cache(&self) {
+        let mut cache = self.cache.borrow_mut();
+        if cache.generation == self.generation {
+            return;
+        }
+        cache.segments.clear();
+        for seg in self.inner.segments() {
+            cache.segments.push(self.build_live_index(seg));
+        }
+        cache.generation = self.generation;
+    }
+
+    /// Build a MinHash LSH over the live documents of `batch` (None if empty),
+    /// keeping the insertion-order id map alongside.
+    fn build_live_index(&self, batch: &[(u32, String)]) -> Option<Block> {
         let mut lsh = match MinHashTextLSH::new(self.config.clone()) {
             Ok(l) => l,
-            Err(_) => return Vec::new(),
+            Err(_) => return None,
         };
         let mut ids: Vec<u32> = Vec::new();
         for (id, doc) in batch {
@@ -112,14 +159,18 @@ impl UpdatableIndex {
             }
         }
         if ids.is_empty() {
-            return Vec::new();
+            return None;
         }
-        // The LSH returns insertion-order indices; map them back to caller ids.
-        lsh.query(text)
-            .into_iter()
-            .filter_map(|i| ids.get(i).copied())
-            .collect()
+        Some((lsh, ids))
     }
+}
+
+/// Run a query against a cached block, mapping insertion-order results to ids.
+fn query_block((lsh, ids): &Block, text: &str) -> Vec<u32> {
+    lsh.query(text)
+        .into_iter()
+        .filter_map(|i| ids.get(i).copied())
+        .collect()
 }
 
 #[cfg(test)]
@@ -146,11 +197,12 @@ mod tests {
                 "identical docs are near-duplicates"
             );
             assert!(!dups.contains(&3), "unrelated doc is not");
+            assert_eq!(store.near_duplicates(A), dups, "cached query is stable");
 
             store.delete(2).unwrap();
             assert!(
                 !store.near_duplicates(A).contains(&2),
-                "deleted doc drops out"
+                "delete invalidates the cache; deleted doc drops out"
             );
 
             store.compact().unwrap();
