@@ -35,6 +35,9 @@ durability = { version = "0.6", optional = true }
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 proptest = "1"
+# Rosetta cross-language correctness fixtures (tests/rosetta_*.rs).
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 [profile.bench]
 lto = "thin"
