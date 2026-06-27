@@ -48,3 +48,7 @@ name = "hash_bench"
 path = "benches/hash_bench.rs"
 harness = false
 
+[[bench]]
+name = "store"
+harness = false
+
