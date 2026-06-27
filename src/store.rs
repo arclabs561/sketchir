@@ -15,6 +15,7 @@
 //! supplied at [`UpdatableIndex::open`].
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use durability::{Directory, PersistenceResult};
@@ -46,23 +47,28 @@ impl Store for TextBacking {
             .cloned()
             .collect()
     }
+
+    fn segment_len(&self, seg: &Vec<(u32, String)>) -> usize {
+        seg.len()
+    }
 }
 
 /// A built per-segment LSH plus the insertion-order id map needed to translate
 /// its results back to caller ids.
 type Block = (MinHashTextLSH, Vec<u32>);
 
-/// Cached per-segment LSH blocks, valid for a given mutation generation.
+/// Per-segment LSH blocks keyed by the segment's stable `Arc` identity. Because
+/// segstore keeps an unchanged segment's `Arc` across mutations, a sealed add
+/// only builds the one new segment's block (the rest are reused) instead of
+/// rebuilding the whole corpus -- the dominant cost in an add-then-query loop.
 struct Cache {
-    generation: u64,
-    segments: Vec<Option<Block>>,
+    by_ptr: HashMap<usize, Option<Block>>,
 }
 
 /// An updatable, durable MinHash near-duplicate index.
 pub struct UpdatableIndex {
     inner: SegmentedStore<TextBacking>,
     config: BlockingConfig,
-    generation: u64,
     cache: RefCell<Cache>,
 }
 
@@ -78,32 +84,32 @@ impl UpdatableIndex {
         Ok(Self {
             inner: SegmentedStore::open(dir, TextBacking, flush_threshold)?,
             config,
-            generation: 0,
             cache: RefCell::new(Cache {
-                generation: u64::MAX,
-                segments: Vec::new(),
+                by_ptr: HashMap::new(),
             }),
         })
     }
 
     /// Add (or re-add) a document by id.
     pub fn add(&mut self, id: u32, text: impl Into<String>) -> PersistenceResult<()> {
+        // A sealed add introduces a new segment (a new Arc identity); existing
+        // segments keep theirs, so the cache reuses them and builds only the new one.
         self.inner.add(id, text.into())?;
-        self.generation += 1;
         Ok(())
     }
 
     /// Tombstone a document.
     pub fn delete(&mut self, id: u32) -> PersistenceResult<()> {
         self.inner.delete(id)?;
-        self.generation += 1;
+        // A tombstone changes the live filter used to build every segment's block,
+        // so invalidate the cache (deletes are far rarer than adds).
+        self.cache.borrow_mut().by_ptr.clear();
         Ok(())
     }
 
     /// Merge segments (dropping tombstoned docs) and persist a checkpoint.
     pub fn compact(&mut self) -> PersistenceResult<()> {
         self.inner.compact()?;
-        self.generation += 1;
         Ok(())
     }
 
@@ -115,11 +121,23 @@ impl UpdatableIndex {
     /// Document ids that are near-duplicate candidates of `text`, unioned over
     /// every live document.
     pub fn near_duplicates(&self, text: &str) -> Vec<u32> {
-        self.refresh_cache();
         let mut out: Vec<u32> = Vec::new();
         {
-            let cache = self.cache.borrow();
-            for block in cache.segments.iter().flatten() {
+            let segs = self.inner.segments();
+            let mut cache = self.cache.borrow_mut();
+            // Drop cached blocks for segments no longer present (post-compaction).
+            let current: std::collections::HashSet<usize> =
+                segs.iter().map(|a| Arc::as_ptr(a) as usize).collect();
+            cache.by_ptr.retain(|key, _| current.contains(key));
+            // Build only segments not already cached (i.e. new ones).
+            for seg in segs {
+                let key = Arc::as_ptr(seg) as usize;
+                cache
+                    .by_ptr
+                    .entry(key)
+                    .or_insert_with(|| self.build_live_index(&seg[..]));
+            }
+            for block in cache.by_ptr.values().flatten() {
                 out.extend(query_block(block, text));
             }
         }
@@ -130,18 +148,6 @@ impl UpdatableIndex {
         out.sort_unstable();
         out.dedup();
         out
-    }
-
-    fn refresh_cache(&self) {
-        let mut cache = self.cache.borrow_mut();
-        if cache.generation == self.generation {
-            return;
-        }
-        cache.segments.clear();
-        for seg in self.inner.segments() {
-            cache.segments.push(self.build_live_index(seg));
-        }
-        cache.generation = self.generation;
     }
 
     /// Build a MinHash LSH over the live documents of `batch` (None if empty),
