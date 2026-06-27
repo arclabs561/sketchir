@@ -51,6 +51,10 @@ impl Store for TextBacking {
     fn segment_len(&self, seg: &Vec<(u32, String)>) -> usize {
         seg.len()
     }
+
+    fn live_len(&self, seg: &Vec<(u32, String)>, live: &dyn Fn(&u32) -> bool) -> Option<usize> {
+        Some(seg.iter().filter(|(id, _)| live(id)).count())
+    }
 }
 
 /// A built per-segment LSH plus the insertion-order id map needed to translate
@@ -116,6 +120,20 @@ impl UpdatableIndex {
     /// Persist a checkpoint without merging.
     pub fn checkpoint(&mut self) -> PersistenceResult<()> {
         self.inner.checkpoint()
+    }
+
+    /// Merge only the segments whose live ratio is below `min_live_ratio`,
+    /// reclaiming tombstoned documents -- the cheap alternative to a full
+    /// [`compact`](Self::compact) when a few segments are delete-heavy.
+    pub fn reclaim(&mut self, min_live_ratio: f64) -> PersistenceResult<()> {
+        self.inner.reclaim_tombstones(min_live_ratio)?;
+        Ok(())
+    }
+
+    /// Storage amplification: stored documents divided by live documents (`1.0`
+    /// with no tombstones, higher as deletes accumulate).
+    pub fn space_amplification(&self) -> Option<f64> {
+        self.inner.space_amplification()
     }
 
     /// Document ids that are near-duplicate candidates of `text`, unioned over
