@@ -38,11 +38,11 @@ impl Store for TextBacking {
 
     fn merge_segments(
         &self,
-        segs: &[Vec<(u32, String)>],
+        segs: &[&Vec<(u32, String)>],
         live: &dyn Fn(&u32) -> bool,
     ) -> Vec<(u32, String)> {
         segs.iter()
-            .flatten()
+            .flat_map(|s| s.iter())
             .filter(|(id, _)| live(id))
             .cloned()
             .collect()
@@ -102,6 +102,20 @@ impl UpdatableIndex {
         Ok(())
     }
 
+    /// Add (or re-add) many documents, syncing the write-ahead log once for the
+    /// whole batch instead of once per document. This is the bulk-ingest path (the
+    /// corpus-load phase): per-item WAL sync is the dominant cost on a real disk, so
+    /// one sync per batch is several times faster than a loop of [`Self::add`]. A
+    /// crash mid-batch recovers a consistent prefix (each document is an
+    /// independently CRC-checked WAL record).
+    pub fn extend(
+        &mut self,
+        docs: impl IntoIterator<Item = (u32, String)>,
+    ) -> PersistenceResult<()> {
+        self.inner.extend(docs)?;
+        Ok(())
+    }
+
     /// Tombstone a document.
     pub fn delete(&mut self, id: u32) -> PersistenceResult<()> {
         self.inner.delete(id)?;
@@ -152,6 +166,10 @@ impl UpdatableIndex {
     /// every live document.
     pub fn near_duplicates(&self, text: &str) -> Vec<u32> {
         let mut out: Vec<u32> = Vec::new();
+        // The query's MinHash signature is config-determined (fixed seed), so it is
+        // identical for every per-segment block. Compute it once and reuse it,
+        // rather than re-shingling and re-hashing the query once per segment.
+        let mut sig = None;
         {
             let segs = self.inner.segments();
             let mut cache = self.cache.borrow_mut();
@@ -167,13 +185,23 @@ impl UpdatableIndex {
                     .entry(key)
                     .or_insert_with(|| self.build_live_index(&seg[..]));
             }
-            for block in cache.by_ptr.values().flatten() {
-                out.extend(query_block(block, text));
+            for (lsh, ids) in cache.by_ptr.values().flatten() {
+                let s = sig.get_or_insert_with(|| lsh.signature(text));
+                out.extend(
+                    lsh.query_sig(s)
+                        .into_iter()
+                        .filter_map(|i| ids.get(i).copied()),
+                );
             }
         }
         let buffered = self.inner.buffer().to_vec();
-        if let Some(block) = self.build_live_index(&buffered) {
-            out.extend(query_block(&block, text));
+        if let Some((lsh, ids)) = self.build_live_index(&buffered) {
+            let s = sig.get_or_insert_with(|| lsh.signature(text));
+            out.extend(
+                lsh.query_sig(s)
+                    .into_iter()
+                    .filter_map(|i| ids.get(i).copied()),
+            );
         }
         out.sort_unstable();
         out.dedup();
@@ -199,14 +227,6 @@ impl UpdatableIndex {
         }
         Some((lsh, ids))
     }
-}
-
-/// Run a query against a cached block, mapping insertion-order results to ids.
-fn query_block((lsh, ids): &Block, text: &str) -> Vec<u32> {
-    lsh.query(text)
-        .into_iter()
-        .filter_map(|i| ids.get(i).copied())
-        .collect()
 }
 
 #[cfg(test)]

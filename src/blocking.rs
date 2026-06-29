@@ -156,11 +156,25 @@ impl MinHashTextLSH {
         self.items.push(TextItem { id, signature });
     }
 
+    /// The MinHash signature of `text` (the shingling + min-hashing half of a
+    /// query). The MinHash seed is fixed, so this depends only on `text` and the
+    /// [`BlockingConfig`], not on which index instance computes it, so a
+    /// multi-segment query can compute the signature once and reuse it across every
+    /// per-segment block instead of re-shingling and re-hashing per segment.
+    pub fn signature(&self, text: &str) -> MinHashSignature {
+        let shingles = shingle(text, self.config.ngram_size, self.config.char_ngrams);
+        self.minhash.signature(&shingles)
+    }
+
+    /// Query for candidate indices that collide with a precomputed `signature` (see
+    /// [`Self::signature`]).
+    pub fn query_sig(&self, signature: &MinHashSignature) -> Vec<usize> {
+        self.index.query(signature)
+    }
+
     /// Query for candidate indices that collide with `text` in any bucket.
     pub fn query(&self, text: &str) -> Vec<usize> {
-        let shingles = shingle(text, self.config.ngram_size, self.config.char_ngrams);
-        let signature = self.minhash.signature(&shingles);
-        self.index.query(&signature)
+        self.query_sig(&self.signature(text))
     }
 
     /// Get all candidate pairs (sorted for deterministic output).
