@@ -13,7 +13,8 @@ use crate::simhash::SimHashFingerprint;
 use crate::{all_finite, lcg_f32, lcg_next, Error, Fnv1a64};
 
 /// LSH index using MinHash banding (near-duplicate detection).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MinHashLSH {
     bands: usize,
     rows_per_band: usize,

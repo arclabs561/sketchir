@@ -5,6 +5,21 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- The `store` feature now persists per-segment MinHash LSH sidecars containing
+  the built block and insertion-order id map, and loads them on restart when the
+  blocking recipe and live id set still match. On `benches/store.rs` (`N=20_000`,
+  `FLUSH=2_000`), cold restart search with sidecars measured
+  `[42.303 ms 42.631 ms 42.942 ms]` versus `[478.41 ms 480.19 ms 482.13 ms]`
+  when sidecars were missing and every segment had to rebuild.
+
+### Changed
+
+- The `store` feature now requires `segstore = "0.4"` and `postcard`.
+
 ## [0.5.4] - 2026-06-28
 
 ### Added

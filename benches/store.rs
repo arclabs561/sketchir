@@ -2,9 +2,9 @@
 //!
 //! Run: `cargo bench --features store --bench store`. Without the feature the
 //! harness is an empty no-op so the target still compiles. Measures build
-//! throughput, warm query latency (per-segment block cached), and the cold
-//! "rebuild every segment" cost -- what a delete that clears the whole cache
-//! pays, which the targeted-invalidation delete avoids (one segment instead).
+//! throughput, warm query latency (per-segment block cached), cold restart
+//! latency with persisted sidecars, and the cold rebuild cost when sidecars are
+//! missing or stale.
 
 #[cfg(not(feature = "store"))]
 fn main() {}
@@ -35,25 +35,32 @@ fn text(state: &mut u64) -> String {
 }
 
 #[cfg(feature = "store")]
-fn fresh_store(warm: bool) -> (sketchir::store::UpdatableIndex, String) {
+fn fresh_store(
+    warm: bool,
+    checkpoint: bool,
+) -> (
+    std::sync::Arc<dyn durability::Directory>,
+    sketchir::store::UpdatableIndex,
+    String,
+) {
     use durability::MemoryDirectory;
     use sketchir::BlockingConfig;
     let mut s = 0x1234_5678_9abc_def0u64;
-    let mut store = sketchir::store::UpdatableIndex::open(
-        MemoryDirectory::arc(),
-        FLUSH,
-        BlockingConfig::default(),
-    )
-    .unwrap();
+    let dir = MemoryDirectory::arc();
+    let mut store =
+        sketchir::store::UpdatableIndex::open(dir.clone(), FLUSH, BlockingConfig::default())
+            .unwrap();
     for i in 0..N {
         store.add(i as u32, text(&mut s)).unwrap();
     }
-    store.checkpoint().unwrap();
+    if checkpoint {
+        store.checkpoint().unwrap();
+    }
     let q = text(&mut s);
     if warm {
         let _ = store.near_duplicates(&q);
     }
-    (store, q)
+    (dir, store, q)
 }
 
 #[cfg(feature = "store")]
@@ -64,18 +71,38 @@ fn benches(c: &mut Criterion) {
         b.iter_batched(
             || (),
             |_| {
-                let _ = fresh_store(false);
+                let _ = fresh_store(false, true);
             },
             BatchSize::SmallInput,
         )
     });
 
-    let (warm, q) = fresh_store(true);
+    let (_, warm, q) = fresh_store(true, true);
     g.bench_function("search_warm", |b| b.iter(|| warm.near_duplicates(&q)));
 
-    g.bench_function("search_cold_rebuild_all", |b| {
+    g.bench_function("search_cold_load_sidecars", |b| {
         b.iter_batched(
-            || fresh_store(false),
+            || {
+                let (dir, _, q) = fresh_store(false, true);
+                let store = sketchir::store::UpdatableIndex::open(
+                    dir,
+                    FLUSH,
+                    sketchir::BlockingConfig::default(),
+                )
+                .unwrap();
+                (store, q)
+            },
+            |(store, q)| store.near_duplicates(&q),
+            BatchSize::SmallInput,
+        )
+    });
+
+    g.bench_function("search_cold_rebuild_missing_sidecars", |b| {
+        b.iter_batched(
+            || {
+                let (_, store, q) = fresh_store(false, false);
+                (store, q)
+            },
             |(store, q)| store.near_duplicates(&q),
             BatchSize::SmallInput,
         )

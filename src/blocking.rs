@@ -33,7 +33,8 @@ use crate::minhash::{MinHash, MinHashSignature};
 use crate::Error;
 
 /// Configuration for MinHash-based text blocking.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BlockingConfig {
     /// Number of hash functions per band (higher = stricter matching).
     pub num_hashes_per_band: usize,
@@ -90,6 +91,7 @@ impl BlockingConfig {
 
 /// A text item stored in the index.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct TextItem {
     /// External identifier.
     id: String,
@@ -97,7 +99,8 @@ pub(crate) struct TextItem {
 }
 
 /// MinHash + banding LSH over raw text.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MinHashTextLSH {
     config: BlockingConfig,
     minhash: MinHash,

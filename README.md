@@ -9,7 +9,7 @@ near-duplicate detection and approximate similarity search.
 
 ```toml
 [dependencies]
-sketchir = "0.3"
+sketchir = "0.5"
 ```
 
 ## Best starting points
@@ -53,7 +53,8 @@ Runnable examples live in [`examples/`](examples/):
 `store::UpdatableIndex` wraps the MinHash near-duplicate index in a durable,
 segmented store ([`segstore`](https://crates.io/crates/segstore)): incremental
 add/delete, a write-ahead log, checkpoint, compaction, and crash recovery. The
-per-segment LSH blocks are cached and rebuilt only on mutation, not per query.
+per-segment LSH blocks are cached and persisted as sidecars, so restart loads
+unchanged MinHash blocks instead of rebuilding them.
 Opt-in; the default build does not depend on segstore.
 
 ## License
