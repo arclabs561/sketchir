@@ -62,12 +62,11 @@ impl Store for TextBacking {
 /// its results back to caller ids.
 type Block = (MinHashTextLSH, Vec<u32>);
 
-/// Per-segment LSH blocks keyed by the segment's stable `Arc` identity. Because
-/// segstore keeps an unchanged segment's `Arc` across mutations, a sealed add
-/// only builds the one new segment's block (the rest are reused) instead of
-/// rebuilding the whole corpus -- the dominant cost in an add-then-query loop.
+/// Per-segment LSH blocks keyed by segstore's stable segment id. A sealed add
+/// creates one new segment id, so cached blocks for existing segments are reused
+/// instead of rebuilding the whole corpus on the next query.
 struct Cache {
-    by_ptr: HashMap<usize, Option<Block>>,
+    by_segment_id: HashMap<u64, Option<Block>>,
 }
 
 /// The `kind` tag for a persisted per-segment MinHash LSH sidecar.
@@ -105,7 +104,7 @@ impl UpdatableIndex {
             sidecar_recipe: Self::make_sidecar_recipe(&config),
             config,
             cache: RefCell::new(Cache {
-                by_ptr: HashMap::new(),
+                by_segment_id: HashMap::new(),
             }),
             persisted: RefCell::new(HashSet::new()),
         })
@@ -113,8 +112,8 @@ impl UpdatableIndex {
 
     /// Add (or re-add) a document by id.
     pub fn add(&mut self, id: u32, text: impl Into<String>) -> PersistenceResult<()> {
-        // A sealed add introduces a new segment (a new Arc identity); existing
-        // segments keep theirs, so the cache reuses them and builds only the new one.
+        // A sealed add introduces a new segment id; existing segment ids stay
+        // stable, so the cache reuses them and builds only the new one.
         self.inner.add(id, text.into())?;
         Ok(())
     }
@@ -144,8 +143,8 @@ impl UpdatableIndex {
         let ids = self.inner.segment_ids();
         for (seg_idx, seg) in self.inner.segments().iter().enumerate() {
             if seg.iter().any(|(sid, _)| *sid == id) {
-                cache.by_ptr.remove(&(Arc::as_ptr(seg) as usize));
                 let seg_id = ids[seg_idx];
+                cache.by_segment_id.remove(&seg_id);
                 self.persisted.borrow_mut().remove(&seg_id);
                 let _ = self
                     .inner
@@ -159,6 +158,7 @@ impl UpdatableIndex {
     /// Merge segments (dropping tombstoned docs) and persist a checkpoint.
     pub fn compact(&mut self) -> PersistenceResult<()> {
         self.inner.compact()?;
+        self.prune_cache_to_current_segments();
         self.persist_new_segments();
         Ok(())
     }
@@ -175,6 +175,7 @@ impl UpdatableIndex {
     pub fn compact_tiers(&mut self) -> PersistenceResult<()> {
         let stats = self.inner.compact_tiers()?;
         if stats.merges > 0 {
+            self.prune_cache_to_current_segments();
             self.persist_new_segments();
         }
         Ok(())
@@ -186,6 +187,7 @@ impl UpdatableIndex {
     pub fn reclaim(&mut self, min_live_ratio: f64) -> PersistenceResult<()> {
         let stats = self.inner.reclaim_tombstones(min_live_ratio)?;
         if stats.merges > 0 {
+            self.prune_cache_to_current_segments();
             self.persist_new_segments();
         }
         Ok(())
@@ -208,28 +210,23 @@ impl UpdatableIndex {
         {
             let segs = self.inner.segments();
             let mut cache = self.cache.borrow_mut();
-            // Drop cached blocks for segments no longer present (post-compaction).
-            let current: std::collections::HashSet<usize> =
-                segs.iter().map(|a| Arc::as_ptr(a) as usize).collect();
-            cache.by_ptr.retain(|key, _| current.contains(key));
-            // Build only segments not already cached, loading a persisted sidecar
-            // first when one matches the current recipe and live id set.
+            // Build only current segments not already cached, loading a persisted
+            // sidecar first when one matches the current recipe and live id set.
             let ids = self.inner.segment_ids();
             for (i, seg) in segs.iter().enumerate() {
-                let key = Arc::as_ptr(seg) as usize;
                 let seg_id = ids[i];
-                cache
-                    .by_ptr
-                    .entry(key)
+                let block = cache
+                    .by_segment_id
+                    .entry(seg_id)
                     .or_insert_with(|| self.build_or_load(&seg[..], seg_id));
-            }
-            for (lsh, ids) in cache.by_ptr.values().flatten() {
-                let s = sig.get_or_insert_with(|| lsh.signature(text));
-                out.extend(
-                    lsh.query_sig(s)
-                        .into_iter()
-                        .filter_map(|i| ids.get(i).copied()),
-                );
+                if let Some((lsh, ids)) = block {
+                    let s = sig.get_or_insert_with(|| lsh.signature(text));
+                    out.extend(
+                        lsh.query_sig(s)
+                            .into_iter()
+                            .filter_map(|i| ids.get(i).copied()),
+                    );
+                }
             }
         }
         let buffered = self.inner.buffer().to_vec();
@@ -244,6 +241,14 @@ impl UpdatableIndex {
         out.sort_unstable();
         out.dedup();
         out
+    }
+
+    fn prune_cache_to_current_segments(&self) {
+        let current: HashSet<u64> = self.inner.segment_ids().iter().copied().collect();
+        self.cache
+            .borrow_mut()
+            .by_segment_id
+            .retain(|id, _| current.contains(id));
     }
 
     /// Build a MinHash LSH over the live documents of `batch` (None if empty),
@@ -529,6 +534,46 @@ mod tests {
                 .dir()
                 .exists(&store.inner.index_name(ids[0], INDEX_KIND)),
             "merged segment should have a sidecar immediately after compact"
+        );
+    }
+
+    #[test]
+    fn compact_prunes_cached_segment_blocks() {
+        let dir = MemoryDirectory::arc();
+        let mut store = UpdatableIndex::open(dir, 2, BlockingConfig::default()).unwrap();
+        store.add(1, A).unwrap();
+        store.add(2, C).unwrap();
+        store.add(3, B).unwrap();
+        store.add(4, "a separate unrelated document").unwrap();
+
+        let before_ids = store.inner.segment_ids().to_vec();
+        assert!(
+            before_ids.len() >= 2,
+            "test setup should create multiple sealed segments"
+        );
+        let _ = store.near_duplicates(A);
+        assert_eq!(
+            store.cache.borrow().by_segment_id.len(),
+            before_ids.len(),
+            "warm query should cache each sealed segment"
+        );
+
+        store.compact().unwrap();
+
+        let after_ids = store.inner.segment_ids().to_vec();
+        assert_eq!(
+            after_ids.len(),
+            1,
+            "compact should merge the sealed segments"
+        );
+        assert!(
+            store
+                .cache
+                .borrow()
+                .by_segment_id
+                .keys()
+                .all(|id| after_ids.contains(id)),
+            "cache should not retain blocks for compacted-away segment ids"
         );
     }
 
