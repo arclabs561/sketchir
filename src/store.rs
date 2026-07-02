@@ -159,6 +159,7 @@ impl UpdatableIndex {
     /// Merge segments (dropping tombstoned docs) and persist a checkpoint.
     pub fn compact(&mut self) -> PersistenceResult<()> {
         self.inner.compact()?;
+        self.persist_new_segments();
         Ok(())
     }
 
@@ -172,7 +173,10 @@ impl UpdatableIndex {
     /// Run one round of size-tiered compaction, merging similarly-sized segments
     /// so the segment count stays bounded without a full [`compact`](Self::compact).
     pub fn compact_tiers(&mut self) -> PersistenceResult<()> {
-        self.inner.compact_tiers()?;
+        let stats = self.inner.compact_tiers()?;
+        if stats.merges > 0 {
+            self.persist_new_segments();
+        }
         Ok(())
     }
 
@@ -180,7 +184,10 @@ impl UpdatableIndex {
     /// reclaiming tombstoned documents -- the cheap alternative to a full
     /// [`compact`](Self::compact) when a few segments are delete-heavy.
     pub fn reclaim(&mut self, min_live_ratio: f64) -> PersistenceResult<()> {
-        self.inner.reclaim_tombstones(min_live_ratio)?;
+        let stats = self.inner.reclaim_tombstones(min_live_ratio)?;
+        if stats.merges > 0 {
+            self.persist_new_segments();
+        }
         Ok(())
     }
 
@@ -501,6 +508,27 @@ mod tests {
         assert!(
             dups.contains(&1) && dups.contains(&2),
             "search over loaded sidecars returns duplicate candidates"
+        );
+    }
+
+    #[test]
+    fn compact_persists_sidecar_for_merged_segment() {
+        let dir = MemoryDirectory::arc();
+        let mut store = UpdatableIndex::open(dir, 2, BlockingConfig::default()).unwrap();
+        store.add(1, A).unwrap();
+        store.add(2, C).unwrap();
+        store.add(3, B).unwrap();
+        store.add(4, "a separate unrelated document").unwrap();
+        store.compact().unwrap();
+
+        let ids: Vec<u64> = store.inner.segment_ids().to_vec();
+        assert_eq!(ids.len(), 1, "compact should merge the sealed segments");
+        assert!(
+            store
+                .inner
+                .dir()
+                .exists(&store.inner.index_name(ids[0], INDEX_KIND)),
+            "merged segment should have a sidecar immediately after compact"
         );
     }
 
