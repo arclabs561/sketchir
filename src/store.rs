@@ -202,7 +202,43 @@ impl UpdatableIndex {
     /// Document ids that are near-duplicate candidates of `text`, unioned over
     /// every live document.
     pub fn near_duplicates(&self, text: &str) -> Vec<u32> {
-        let mut out: Vec<u32> = Vec::new();
+        let mut out = self.collect_from_blocks(text, |lsh, ids, sig| {
+            lsh.query_sig(sig)
+                .into_iter()
+                .filter_map(|i| ids.get(i).copied())
+                .collect()
+        });
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// Near-duplicate candidates of `text`, ranked by estimated Jaccard
+    /// similarity and deduplicated by document id.
+    pub fn near_duplicates_with_similarity(&self, text: &str) -> Vec<(u32, f64)> {
+        let mut by_id: HashMap<u32, f64> = HashMap::new();
+        for (id, sim) in self.collect_from_blocks(text, |lsh, ids, sig| {
+            lsh.query_sig_with_similarity(sig)
+                .into_iter()
+                .filter_map(|(i, sim)| ids.get(i).copied().map(|id| (id, sim)))
+                .collect()
+        }) {
+            by_id
+                .entry(id)
+                .and_modify(|existing| *existing = existing.max(sim))
+                .or_insert(sim);
+        }
+        let mut out: Vec<(u32, f64)> = by_id.into_iter().collect();
+        out.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        out
+    }
+
+    fn collect_from_blocks<T>(
+        &self,
+        text: &str,
+        mut f: impl FnMut(&MinHashTextLSH, &[u32], &crate::MinHashSignature) -> Vec<T>,
+    ) -> Vec<T> {
+        let mut out: Vec<T> = Vec::new();
         // The query's MinHash signature is config-determined (fixed seed), so it is
         // identical for every per-segment block. Compute it once and reuse it,
         // rather than re-shingling and re-hashing the query once per segment.
@@ -221,25 +257,15 @@ impl UpdatableIndex {
                     .or_insert_with(|| self.build_or_load(&seg[..], seg_id));
                 if let Some((lsh, ids)) = block {
                     let s = sig.get_or_insert_with(|| lsh.signature(text));
-                    out.extend(
-                        lsh.query_sig(s)
-                            .into_iter()
-                            .filter_map(|i| ids.get(i).copied()),
-                    );
+                    out.extend(f(lsh, ids, s));
                 }
             }
         }
         let buffered = self.inner.buffer().to_vec();
         if let Some((lsh, ids)) = self.build_live_index(&buffered) {
             let s = sig.get_or_insert_with(|| lsh.signature(text));
-            out.extend(
-                lsh.query_sig(s)
-                    .into_iter()
-                    .filter_map(|i| ids.get(i).copied()),
-            );
+            out.extend(f(&lsh, &ids, s));
         }
-        out.sort_unstable();
-        out.dedup();
         out
     }
 
@@ -478,6 +504,23 @@ mod tests {
             dups.contains(&1) && !dups.contains(&2),
             "recovery preserves the result"
         );
+    }
+
+    #[test]
+    fn near_duplicates_with_similarity_covers_segments_and_buffer() {
+        let dir = MemoryDirectory::arc();
+        let mut store = UpdatableIndex::open(dir, 2, BlockingConfig::default()).unwrap();
+        store.add(1, A).unwrap();
+        store.add(2, C).unwrap();
+        store.add(3, A).unwrap();
+
+        assert_eq!(store.near_duplicates(A), vec![1, 2, 3]);
+        let ranked = store.near_duplicates_with_similarity(A);
+        assert_eq!(
+            ranked.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert!(ranked.iter().all(|(_, sim)| (sim - 1.0).abs() < 1e-9));
     }
 
     #[test]

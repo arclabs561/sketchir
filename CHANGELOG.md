@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `MinHashTextLSH::query_with_similarity` and `query_sig_with_similarity`
+  return candidate indices ranked by estimated Jaccard similarity.
+- `store::UpdatableIndex::near_duplicates_with_similarity` returns durable
+  near-duplicate candidates ranked by estimated Jaccard similarity across sealed
+  segments plus the unflushed buffer.
+
 ### Changed
 
 - `store::UpdatableIndex` now keys its in-memory MinHash block cache by

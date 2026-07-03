@@ -175,9 +175,30 @@ impl MinHashTextLSH {
         self.index.query(signature)
     }
 
+    /// Query with a precomputed signature and return candidates ranked by
+    /// estimated Jaccard similarity.
+    pub fn query_sig_with_similarity(&self, signature: &MinHashSignature) -> Vec<(usize, f64)> {
+        let mut results: Vec<(usize, f64)> = self
+            .query_sig(signature)
+            .into_iter()
+            .filter_map(|idx| {
+                let item = self.items.get(idx)?;
+                let sim = signature.jaccard(&item.signature)?;
+                Some((idx, sim))
+            })
+            .collect();
+        results.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        results
+    }
+
     /// Query for candidate indices that collide with `text` in any bucket.
     pub fn query(&self, text: &str) -> Vec<usize> {
         self.query_sig(&self.signature(text))
+    }
+
+    /// Query for candidates ranked by estimated Jaccard similarity.
+    pub fn query_with_similarity(&self, text: &str) -> Vec<(usize, f64)> {
+        self.query_sig_with_similarity(&self.signature(text))
     }
 
     /// Get all candidate pairs (sorted for deterministic output).
@@ -266,6 +287,21 @@ mod tests {
         lsh.insert_text("2", "New York");
         let sim = lsh.estimated_similarity(0, 1).unwrap();
         assert!((sim - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn query_with_similarity_ranks_identical_candidate_first() {
+        let mut lsh = MinHashTextLSH::new(BlockingConfig::default()).unwrap();
+        lsh.insert_text("same", "New York");
+        lsh.insert_text("partial", "New York City");
+        lsh.insert_text("other", "San Francisco");
+
+        let ranked = lsh.query_with_similarity("New York");
+        assert_eq!(ranked[0].0, 0);
+        assert!((ranked[0].1 - 1.0).abs() < 1e-9);
+        for window in ranked.windows(2) {
+            assert!(window[0].1 >= window[1].1);
+        }
     }
 
     #[test]
