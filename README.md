@@ -55,6 +55,8 @@ segmented store ([`segstore`](https://crates.io/crates/segstore)): incremental
 add/delete, a write-ahead log, checkpoint, compaction, and crash recovery. The
 per-segment LSH blocks are cached and persisted as sidecars, so restart loads
 unchanged MinHash blocks instead of rebuilding them.
+The source text batches are still loaded by the current `segstore` open path;
+the sidecars avoid rebuilding LSH blocks.
 Opt-in; the default build does not depend on segstore.
 
 ## License
