@@ -175,11 +175,36 @@ impl MinHashTextLSH {
         self.index.query(signature)
     }
 
+    /// Query for candidate indices that share at least `min_shared_bands` band
+    /// buckets with a precomputed `signature`.
+    ///
+    /// A threshold of `1` matches [`Self::query_sig`]. Raising the threshold can
+    /// reduce candidate fanout for high-precision dedupe pipelines.
+    pub fn query_sig_min_shared_bands(
+        &self,
+        signature: &MinHashSignature,
+        min_shared_bands: usize,
+    ) -> Vec<usize> {
+        self.index
+            .query_min_shared_bands(signature, min_shared_bands)
+    }
+
     /// Query with a precomputed signature and return candidates ranked by
     /// estimated Jaccard similarity.
     pub fn query_sig_with_similarity(&self, signature: &MinHashSignature) -> Vec<(usize, f64)> {
+        self.query_sig_with_similarity_min_shared_bands(signature, 1)
+    }
+
+    /// Query with a precomputed signature, require at least `min_shared_bands`
+    /// matching bands, and return candidates ranked by estimated Jaccard
+    /// similarity.
+    pub fn query_sig_with_similarity_min_shared_bands(
+        &self,
+        signature: &MinHashSignature,
+        min_shared_bands: usize,
+    ) -> Vec<(usize, f64)> {
         let mut results: Vec<(usize, f64)> = self
-            .query_sig(signature)
+            .query_sig_min_shared_bands(signature, min_shared_bands)
             .into_iter()
             .filter_map(|idx| {
                 let item = self.items.get(idx)?;
@@ -196,9 +221,25 @@ impl MinHashTextLSH {
         self.query_sig(&self.signature(text))
     }
 
+    /// Query for candidate indices that share at least `min_shared_bands` band
+    /// buckets with `text`.
+    pub fn query_min_shared_bands(&self, text: &str, min_shared_bands: usize) -> Vec<usize> {
+        self.query_sig_min_shared_bands(&self.signature(text), min_shared_bands)
+    }
+
     /// Query for candidates ranked by estimated Jaccard similarity.
     pub fn query_with_similarity(&self, text: &str) -> Vec<(usize, f64)> {
         self.query_sig_with_similarity(&self.signature(text))
+    }
+
+    /// Query for candidates sharing at least `min_shared_bands` band buckets,
+    /// ranked by estimated Jaccard similarity.
+    pub fn query_with_similarity_min_shared_bands(
+        &self,
+        text: &str,
+        min_shared_bands: usize,
+    ) -> Vec<(usize, f64)> {
+        self.query_sig_with_similarity_min_shared_bands(&self.signature(text), min_shared_bands)
     }
 
     /// Get all candidate pairs (sorted for deterministic output).
@@ -302,6 +343,23 @@ mod tests {
         for window in ranked.windows(2) {
             assert!(window[0].1 >= window[1].1);
         }
+    }
+
+    #[test]
+    fn query_min_shared_bands_matches_default_at_one() {
+        let mut lsh = MinHashTextLSH::new(BlockingConfig::default()).unwrap();
+        lsh.insert_text("same", "New York");
+        lsh.insert_text("partial", "New York City");
+        lsh.insert_text("other", "San Francisco");
+
+        assert_eq!(
+            lsh.query("New York"),
+            lsh.query_min_shared_bands("New York", 1)
+        );
+        assert_eq!(
+            lsh.query_with_similarity("New York"),
+            lsh.query_with_similarity_min_shared_bands("New York", 1)
+        );
     }
 
     #[test]

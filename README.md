@@ -59,6 +59,8 @@ per-segment LSH blocks are cached and persisted as sidecars, so restart loads
 unchanged MinHash blocks instead of rebuilding them.
 `near_duplicates_with_similarity` ranks durable candidates by estimated Jaccard
 similarity while reusing one query signature across all segments.
+`near_duplicates_min_shared_bands` requires repeated band collisions when you
+want fewer, higher-precision candidates.
 The source text batches are still loaded by the current `segstore` open path;
 the sidecars avoid rebuilding LSH blocks.
 Opt-in; the default build does not depend on segstore.

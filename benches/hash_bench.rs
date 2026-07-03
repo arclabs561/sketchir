@@ -2,6 +2,7 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 
 use sketchir::{
     hyperplane::HyperplaneHasher,
+    lsh::MinHashLSH,
     minhash::MinHash,
     multibit::{MultibitConfig, MultibitLSH},
     simhash::simhash_fingerprint,
@@ -40,6 +41,14 @@ fn make_feature_hashes(n: usize, seed: u64) -> Vec<(u64, f32)> {
             (h, w)
         })
         .collect()
+}
+
+fn make_set(shared: usize, unique: usize, doc: u64) -> HashSet<u64> {
+    let mut items: HashSet<u64> = (0..shared as u64).collect();
+    for i in 0..unique as u64 {
+        items.insert(1_000_000 + doc * unique as u64 + i);
+    }
+    items
 }
 
 // ============================================================================
@@ -96,6 +105,44 @@ fn bench_minhash(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_minhash_lsh_query(c: &mut Criterion) {
+    let mh = MinHash::new(128).unwrap();
+    let mut index = MinHashLSH::new(32, 4).unwrap();
+    let query_items = make_set(24, 16, 0);
+    let query_sig = mh.signature(&query_items);
+
+    for doc in 0..5_000u64 {
+        let items = if doc % 25 == 0 {
+            query_items.clone()
+        } else {
+            make_set(24, 16, doc + 1)
+        };
+        index.insert(mh.signature(&items)).unwrap();
+    }
+
+    let mut group = c.benchmark_group("minhash_lsh_query");
+    group.throughput(Throughput::Elements(5_000));
+    for min_shared_bands in [1usize, 2, 4] {
+        group.bench_with_input(
+            BenchmarkId::new("with_similarity_min_shared_bands", min_shared_bands),
+            &min_shared_bands,
+            |b, &min_shared_bands| {
+                b.iter(|| {
+                    black_box(
+                        index
+                            .query_with_similarity_min_shared_bands(
+                                black_box(&query_sig),
+                                min_shared_bands,
+                            )
+                            .len(),
+                    )
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
 // ============================================================================
 // MultibitLSH fingerprinting (dense vector, 1-bit and 4-bit)
 // ============================================================================
@@ -132,6 +179,7 @@ criterion_group!(
     bench_simhash_fingerprint,
     bench_hyperplane_hasher,
     bench_minhash,
+    bench_minhash_lsh_query,
     bench_multibit_fingerprint,
 );
 criterion_main!(benches);

@@ -11,9 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `MinHashTextLSH::query_with_similarity` and `query_sig_with_similarity`
   return candidate indices ranked by estimated Jaccard similarity.
+- `MinHashTextLSH::{query_min_shared_bands,query_sig_min_shared_bands}` and
+  ranked variants allow high-precision searches to require multiple matching
+  MinHash LSH bands before returning a candidate.
 - `store::UpdatableIndex::near_duplicates_with_similarity` returns durable
   near-duplicate candidates ranked by estimated Jaccard similarity across sealed
   segments plus the unflushed buffer.
+- `store::UpdatableIndex::{near_duplicates_min_shared_bands,near_duplicates_with_similarity_min_shared_bands}`
+  apply the same minimum-shared-band filter across durable segments plus the
+  unflushed buffer.
 
 ### Changed
 

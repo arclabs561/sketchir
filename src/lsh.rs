@@ -84,10 +84,61 @@ impl MinHashLSH {
         v
     }
 
+    /// Return candidate document IDs that share at least `min_shared_bands` band
+    /// buckets with `signature`.
+    ///
+    /// A threshold of `0` is treated as `1`, matching [`Self::query`]. A threshold
+    /// larger than the configured band count has no possible matches.
+    pub fn query_min_shared_bands(
+        &self,
+        signature: &MinHashSignature,
+        min_shared_bands: usize,
+    ) -> Vec<usize> {
+        let min_shared_bands = min_shared_bands.max(1);
+        if min_shared_bands == 1 {
+            return self.query(signature);
+        }
+        if min_shared_bands > self.bands {
+            return Vec::new();
+        }
+
+        let mut counts: HashMap<usize, usize> = HashMap::new();
+        for (band_idx, chunk) in signature
+            .values
+            .chunks(self.rows_per_band)
+            .enumerate()
+            .take(self.bands)
+        {
+            let band_hash = hash_band(chunk);
+            if let Some(docs) = self.buckets[band_idx].get(&band_hash) {
+                for doc in docs {
+                    *counts.entry(*doc).or_insert(0) += 1;
+                }
+            }
+        }
+
+        let mut v: Vec<usize> = counts
+            .into_iter()
+            .filter_map(|(doc, count)| (count >= min_shared_bands).then_some(doc))
+            .collect();
+        v.sort_unstable();
+        v
+    }
+
     /// Query and return candidates with estimated Jaccard similarity.
     pub fn query_with_similarity(&self, signature: &MinHashSignature) -> Vec<(usize, f64)> {
+        self.query_with_similarity_min_shared_bands(signature, 1)
+    }
+
+    /// Query candidates sharing at least `min_shared_bands` bands and return them
+    /// ranked by estimated Jaccard similarity.
+    pub fn query_with_similarity_min_shared_bands(
+        &self,
+        signature: &MinHashSignature,
+        min_shared_bands: usize,
+    ) -> Vec<(usize, f64)> {
         let mut results: Vec<(usize, f64)> = self
-            .query(signature)
+            .query_min_shared_bands(signature, min_shared_bands)
             .into_iter()
             .filter_map(|id| {
                 let sim = signature.jaccard(&self.signatures[id])?;
@@ -424,5 +475,30 @@ mod tests {
         assert_eq!(doc_id, 0);
         let candidates = ix.query(&sig);
         assert_eq!(candidates, vec![0]);
+    }
+
+    #[test]
+    fn minhash_lsh_min_shared_bands_filters_single_band_hits() {
+        let mut ix = MinHashLSH::new(3, 1).unwrap();
+        let query = MinHashSignature {
+            values: vec![1, 2, 3],
+        };
+        ix.insert(query.clone()).unwrap();
+        ix.insert(MinHashSignature {
+            values: vec![1, 20, 30],
+        })
+        .unwrap();
+        ix.insert(MinHashSignature {
+            values: vec![1, 2, 30],
+        })
+        .unwrap();
+        ix.insert(MinHashSignature {
+            values: vec![10, 20, 30],
+        })
+        .unwrap();
+
+        assert_eq!(ix.query(&query), vec![0, 1, 2]);
+        assert_eq!(ix.query_min_shared_bands(&query, 2), vec![0, 2]);
+        assert_eq!(ix.query_min_shared_bands(&query, 4), Vec::<usize>::new());
     }
 }

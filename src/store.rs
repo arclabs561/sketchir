@@ -202,8 +202,18 @@ impl UpdatableIndex {
     /// Document ids that are near-duplicate candidates of `text`, unioned over
     /// every live document.
     pub fn near_duplicates(&self, text: &str) -> Vec<u32> {
+        self.near_duplicates_min_shared_bands(text, 1)
+    }
+
+    /// Document ids that share at least `min_shared_bands` MinHash LSH bands
+    /// with `text`, unioned over every live document.
+    pub fn near_duplicates_min_shared_bands(
+        &self,
+        text: &str,
+        min_shared_bands: usize,
+    ) -> Vec<u32> {
         let mut out = self.collect_from_blocks(text, |lsh, ids, sig| {
-            lsh.query_sig(sig)
+            lsh.query_sig_min_shared_bands(sig, min_shared_bands)
                 .into_iter()
                 .filter_map(|i| ids.get(i).copied())
                 .collect()
@@ -216,9 +226,20 @@ impl UpdatableIndex {
     /// Near-duplicate candidates of `text`, ranked by estimated Jaccard
     /// similarity and deduplicated by document id.
     pub fn near_duplicates_with_similarity(&self, text: &str) -> Vec<(u32, f64)> {
+        self.near_duplicates_with_similarity_min_shared_bands(text, 1)
+    }
+
+    /// Near-duplicate candidates sharing at least `min_shared_bands` MinHash LSH
+    /// bands with `text`, ranked by estimated Jaccard similarity and deduplicated
+    /// by document id.
+    pub fn near_duplicates_with_similarity_min_shared_bands(
+        &self,
+        text: &str,
+        min_shared_bands: usize,
+    ) -> Vec<(u32, f64)> {
         let mut by_id: HashMap<u32, f64> = HashMap::new();
         for (id, sim) in self.collect_from_blocks(text, |lsh, ids, sig| {
-            lsh.query_sig_with_similarity(sig)
+            lsh.query_sig_with_similarity_min_shared_bands(sig, min_shared_bands)
                 .into_iter()
                 .filter_map(|(i, sim)| ids.get(i).copied().map(|id| (id, sim)))
                 .collect()
@@ -521,6 +542,30 @@ mod tests {
             vec![1, 2, 3]
         );
         assert!(ranked.iter().all(|(_, sim)| (sim - 1.0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn min_shared_bands_matches_default_at_one_and_can_filter_all() {
+        let dir = MemoryDirectory::arc();
+        let mut store = UpdatableIndex::open(dir, 2, BlockingConfig::default()).unwrap();
+        store.add(1, A).unwrap();
+        store.add(2, C).unwrap();
+        store.add(3, A).unwrap();
+
+        assert_eq!(
+            store.near_duplicates(A),
+            store.near_duplicates_min_shared_bands(A, 1)
+        );
+        assert_eq!(
+            store.near_duplicates_with_similarity(A),
+            store.near_duplicates_with_similarity_min_shared_bands(A, 1)
+        );
+        assert!(
+            store
+                .near_duplicates_min_shared_bands(A, BlockingConfig::default().num_bands + 1)
+                .is_empty(),
+            "no document can share more bands than the index contains"
+        );
     }
 
     #[test]
