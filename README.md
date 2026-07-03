@@ -4,8 +4,10 @@
 [![Documentation](https://docs.rs/sketchir/badge.svg)](https://docs.rs/sketchir)
 [![CI](https://github.com/arclabs561/sketchir/actions/workflows/ci.yml/badge.svg)](https://github.com/arclabs561/sketchir/actions/workflows/ci.yml)
 
-Sketching primitives for IR: MinHash, SimHash, and LSH indexes for
-near-duplicate detection and approximate similarity search.
+Sketching primitives for IR.
+
+MinHash, SimHash, and LSH indexes for near-duplicate detection and approximate
+similarity search.
 
 ```toml
 [dependencies]
@@ -45,7 +47,7 @@ assert!(!pairs.is_empty());
 
 Runnable examples live in [`examples/`](examples/):
 
-- `dedup_documents` indexes a document set and returns candidate near-duplicate pairs via MinHash LSH blocking, the corpus-hygiene use (the engine behind a dedup tool like siftr).
+- `dedup_documents` indexes a document set and returns candidate near-duplicate pairs via MinHash LSH blocking.
 - `minhash_jaccard_validation` checks the MinHash Jaccard estimate against the exact Jaccard index, confirming the sketch is accurate before trusting it at scale.
 
 ## Updatable index (`store` feature)
