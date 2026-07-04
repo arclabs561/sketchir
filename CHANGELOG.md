@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added a `store_reopen_diagnostics` example that measures the
+  `store::SnapshotIndex` sidecar-first reader path versus rebuilding missing
+  per-segment MinHash sidecars from source segments.
 - `MinHashTextLSH::query_with_similarity` and `query_sig_with_similarity`
   return candidate indices ranked by estimated Jaccard similarity.
 - `MinHashTextLSH::{query_min_shared_bands,query_sig_min_shared_bands}` and

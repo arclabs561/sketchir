@@ -56,3 +56,7 @@ harness = false
 [[example]]
 name = "updatable_store"
 required-features = ["store"]
+
+[[example]]
+name = "store_reopen_diagnostics"
+required-features = ["store"]

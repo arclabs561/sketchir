@@ -67,6 +67,20 @@ checkpoint manifest and queries sidecars first, so source text batches are read
 only when a sidecar is missing or unusable.
 Opt-in; the default build does not depend on segstore.
 
+For measurement, `cargo run --release --features store --example store_reopen_diagnostics`
+prints the first snapshot-query cost with persisted MinHash sidecars present
+versus after deleting those sidecars and forcing source-segment rebuilds.
+
+```text
+documents: 1000, flush threshold: 200
+sidecars loaded path: 5
+sidecars rebuild path before/after delete: 5/0
+first snapshot query with sidecars: 2369 us
+first snapshot query after deleting sidecars: 37418 us
+matching candidates: 1
+query doc present: true
+```
+
 ## License
 
 MIT OR Apache-2.0
