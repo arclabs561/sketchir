@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `store::UpdatableIndex::{near_duplicates_min_shared_bands,near_duplicates_with_similarity_min_shared_bands}`
   apply the same minimum-shared-band filter across durable segments plus the
   unflushed buffer.
+- Added `store::SnapshotIndex`, a read-only checkpoint view that opens
+  segstore's manifest and queries persisted per-segment MinHash sidecars before
+  falling back to one source segment decode on a sidecar miss.
 - Added an `updatable_store` example covering add, checkpoint, delete, reopen,
   and ranked near-duplicate search through the optional `store` feature.
 
@@ -30,9 +33,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   entries when compaction/reclaim changes the segment set.
 - Store writer searches now build the temporary writer-buffer MinHash block from
   the buffer slice instead of cloning buffered strings first.
+- The `store` feature now requires `segstore = "0.4.1"` for manifest-only
+  snapshot reads. This remains fully optional; default builds do not depend on
+  the storage stack.
 
 ### Fixed
 
+- MinHash store sidecars now persist the insertion-order id map used by the LSH
+  result indices instead of sorting live ids, preventing reopened indexes from
+  remapping hits to the wrong document id when ids were inserted out of order.
 - `store::UpdatableIndex::{compact, compact_tiers, reclaim}` now persist sidecars
   for newly merged segments immediately after segstore checkpoints them, instead
   of waiting for the next query to rebuild and write the sidecar lazily.

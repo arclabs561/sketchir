@@ -6,21 +6,23 @@
 //! compaction, and the blocking index survives a restart.
 //!
 //! Each segment stores the source `(id, text)` pairs; a real `MinHashTextLSH`
-//! over the live documents of each segment is built and **cached**, rebuilt only
-//! when the index is mutated (an add that seals a segment, a delete, or a
-//! compaction), not on every query. The small unflushed buffer is built per
-//! query. Because the LSH returns insertion-order indices rather than the
+//! over the live documents of each segment is built, cached, and persisted as a
+//! per-segment sidecar. [`crate::store::UpdatableIndex`] keeps the writer path
+//! simple and loads source segments on open; [`crate::store::SnapshotIndex`] is
+//! the read-only restart path that opens only the segstore manifest and uses
+//! sidecars first, decoding a source segment only when its sidecar is missing or
+//! unusable. Because the LSH returns insertion-order indices rather than the
 //! caller's ids, each cached index carries a parallel id vector to map them back.
-//! The `BlockingConfig` is a query-time parameter (not persisted), so it is
-//! supplied at [`UpdatableIndex::open`].
+//! The `BlockingConfig` is supplied at open and encoded into the sidecar recipe.
 
 use std::cell::RefCell;
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::sync::Arc;
 
 use durability::{Directory, PersistenceResult};
-use segstore::{SegmentedStore, Store};
+use segstore::{SegmentCatalog, SegmentedStore, Store};
 
 use crate::{BlockingConfig, MinHashTextLSH};
 
@@ -79,6 +81,72 @@ struct BlockSidecar {
     block: Block,
 }
 
+fn make_sidecar_recipe(config: &BlockingConfig) -> String {
+    format!(
+        "sketchir-store-minhash-v1;\
+         codec=postcard-minhash-text-lsh-v1;\
+         num_hashes_per_band={};num_bands={};ngram_size={};char_ngrams={}",
+        config.num_hashes_per_band, config.num_bands, config.ngram_size, config.char_ngrams
+    )
+}
+
+fn encode_sidecar(recipe: &str, index: &[u8]) -> Option<Vec<u8>> {
+    let recipe = recipe.as_bytes();
+    let recipe_len = u32::try_from(recipe.len()).ok()?;
+    let mut bytes = Vec::with_capacity(16 + recipe.len() + index.len());
+    bytes.extend_from_slice(SIDECAR_MAGIC);
+    bytes.extend_from_slice(&SIDECAR_VERSION.to_le_bytes());
+    bytes.extend_from_slice(&recipe_len.to_le_bytes());
+    bytes.extend_from_slice(recipe);
+    bytes.extend_from_slice(index);
+    Some(bytes)
+}
+
+fn decode_sidecar<'a>(recipe: &str, bytes: &'a [u8]) -> Option<&'a [u8]> {
+    if bytes.len() < 16 {
+        return None;
+    }
+    if &bytes[..8] != SIDECAR_MAGIC {
+        return None;
+    }
+    let version = u32::from_le_bytes(bytes[8..12].try_into().ok()?);
+    if version != SIDECAR_VERSION {
+        return None;
+    }
+    let recipe_len = u32::from_le_bytes(bytes[12..16].try_into().ok()?) as usize;
+    let recipe_start = 16usize;
+    let recipe_end = recipe_start.checked_add(recipe_len)?;
+    if bytes.len() < recipe_end {
+        return None;
+    }
+    if &bytes[recipe_start..recipe_end] != recipe.as_bytes() {
+        return None;
+    }
+    Some(&bytes[recipe_end..])
+}
+
+fn build_block_from_items(
+    batch: &[(u32, String)],
+    config: &BlockingConfig,
+    is_live: impl Fn(&u32) -> bool,
+) -> Option<Block> {
+    let mut lsh = match MinHashTextLSH::new(config.clone()) {
+        Ok(l) => l,
+        Err(_) => return None,
+    };
+    let mut ids: Vec<u32> = Vec::new();
+    for (id, doc) in batch {
+        if is_live(id) {
+            lsh.insert_text(id.to_string(), doc);
+            ids.push(*id);
+        }
+    }
+    if ids.is_empty() {
+        return None;
+    }
+    Some((lsh, ids))
+}
+
 /// An updatable, durable MinHash near-duplicate index.
 pub struct UpdatableIndex {
     inner: SegmentedStore<TextBacking>,
@@ -101,7 +169,7 @@ impl UpdatableIndex {
     ) -> PersistenceResult<Self> {
         Ok(Self {
             inner: SegmentedStore::open(dir, TextBacking, flush_threshold)?,
-            sidecar_recipe: Self::make_sidecar_recipe(&config),
+            sidecar_recipe: make_sidecar_recipe(&config),
             config,
             cache: RefCell::new(Cache {
                 by_segment_id: HashMap::new(),
@@ -301,21 +369,7 @@ impl UpdatableIndex {
     /// Build a MinHash LSH over the live documents of `batch` (None if empty),
     /// keeping the insertion-order id map alongside.
     fn build_live_index(&self, batch: &[(u32, String)]) -> Option<Block> {
-        let mut lsh = match MinHashTextLSH::new(self.config.clone()) {
-            Ok(l) => l,
-            Err(_) => return None,
-        };
-        let mut ids: Vec<u32> = Vec::new();
-        for (id, doc) in batch {
-            if self.inner.is_live(id) {
-                lsh.insert_text(id.to_string(), doc);
-                ids.push(*id);
-            }
-        }
-        if ids.is_empty() {
-            return None;
-        }
-        Some((lsh, ids))
+        build_block_from_items(batch, &self.config, |id| self.inner.is_live(id))
     }
 
     /// Load segment `seg_id`'s persisted MinHash sidecar, or build it over the
@@ -326,12 +380,13 @@ impl UpdatableIndex {
             return Some(block);
         }
         let block = self.build_live_index(seg)?;
-        self.persist_sidecar(&block, seg, seg_id);
+        self.persist_sidecar(&block, seg_id);
         Some(block)
     }
 
-    /// Load a sidecar only if its recipe matches and its ids match the segment's
-    /// current live ids. A stale sidecar can never serve a tombstoned document.
+    /// Load a sidecar only if its recipe matches and its insertion-order id map
+    /// matches the segment's current live ids. A stale sidecar can never serve a
+    /// tombstoned document or remap LSH hit indices to the wrong caller ids.
     fn load_sidecar(&self, seg: &[(u32, String)], seg_id: u64) -> Option<Block> {
         let name = self.inner.index_name(seg_id, INDEX_KIND);
         if !self.inner.dir().exists(&name) {
@@ -346,9 +401,7 @@ impl UpdatableIndex {
             .ok()?;
         let block_bytes = self.decode_sidecar(&bytes)?;
         let sidecar: BlockSidecar = postcard::from_bytes(block_bytes).ok()?;
-        let live = self.live_ids(seg);
-        let ids = &sidecar.block.1;
-        if ids.len() == live.len() && ids.iter().all(|id| live.contains(id)) {
+        if sidecar.block.1 == self.live_id_map(seg) {
             Some(sidecar.block)
         } else {
             None
@@ -357,9 +410,9 @@ impl UpdatableIndex {
 
     /// Persist a built per-segment MinHash block as its sidecar. Best-effort: a
     /// failed write leaves the in-memory block usable and simply rebuilds later.
-    fn persist_sidecar(&self, block: &Block, seg: &[(u32, String)], seg_id: u64) {
+    fn persist_sidecar(&self, block: &Block, seg_id: u64) {
         let sidecar = BlockSidecar {
-            block: (block.0.clone(), self.live_ids_vec(seg)),
+            block: (block.0.clone(), block.1.clone()),
         };
         if let Ok(index) = postcard::to_allocvec(&sidecar) {
             let Some(bytes) = self.encode_sidecar(&index) else {
@@ -376,63 +429,18 @@ impl UpdatableIndex {
         }
     }
 
-    fn live_ids(&self, seg: &[(u32, String)]) -> HashSet<u32> {
+    fn live_id_map(&self, seg: &[(u32, String)]) -> Vec<u32> {
         seg.iter()
             .filter_map(|(id, _)| self.inner.is_live(id).then_some(*id))
             .collect()
     }
 
-    fn live_ids_vec(&self, seg: &[(u32, String)]) -> Vec<u32> {
-        let mut ids: Vec<u32> = seg
-            .iter()
-            .filter_map(|(id, _)| self.inner.is_live(id).then_some(*id))
-            .collect();
-        ids.sort_unstable();
-        ids
-    }
-
-    fn make_sidecar_recipe(config: &BlockingConfig) -> String {
-        format!(
-            "sketchir-store-minhash-v1;\
-             codec=postcard-minhash-text-lsh-v1;\
-             num_hashes_per_band={};num_bands={};ngram_size={};char_ngrams={}",
-            config.num_hashes_per_band, config.num_bands, config.ngram_size, config.char_ngrams
-        )
-    }
-
     fn encode_sidecar(&self, index: &[u8]) -> Option<Vec<u8>> {
-        let recipe = self.sidecar_recipe.as_bytes();
-        let recipe_len = u32::try_from(recipe.len()).ok()?;
-        let mut bytes = Vec::with_capacity(16 + recipe.len() + index.len());
-        bytes.extend_from_slice(SIDECAR_MAGIC);
-        bytes.extend_from_slice(&SIDECAR_VERSION.to_le_bytes());
-        bytes.extend_from_slice(&recipe_len.to_le_bytes());
-        bytes.extend_from_slice(recipe);
-        bytes.extend_from_slice(index);
-        Some(bytes)
+        encode_sidecar(&self.sidecar_recipe, index)
     }
 
     fn decode_sidecar<'a>(&self, bytes: &'a [u8]) -> Option<&'a [u8]> {
-        if bytes.len() < 16 {
-            return None;
-        }
-        if &bytes[..8] != SIDECAR_MAGIC {
-            return None;
-        }
-        let version = u32::from_le_bytes(bytes[8..12].try_into().ok()?);
-        if version != SIDECAR_VERSION {
-            return None;
-        }
-        let recipe_len = u32::from_le_bytes(bytes[12..16].try_into().ok()?) as usize;
-        let recipe_start = 16usize;
-        let recipe_end = recipe_start.checked_add(recipe_len)?;
-        if bytes.len() < recipe_end {
-            return None;
-        }
-        if &bytes[recipe_start..recipe_end] != self.sidecar_recipe.as_bytes() {
-            return None;
-        }
-        Some(&bytes[recipe_end..])
+        decode_sidecar(&self.sidecar_recipe, bytes)
     }
 
     /// Persist sidecars for sealed segments that lack a current one. This is
@@ -451,8 +459,182 @@ impl UpdatableIndex {
                 continue;
             }
             if let Some(block) = self.build_live_index(&seg[..]) {
-                self.persist_sidecar(&block, &seg[..], seg_id);
+                self.persist_sidecar(&block, seg_id);
             }
+        }
+    }
+}
+
+/// A read-only checkpoint view that loads per-segment MinHash sidecars before
+/// falling back to source segment payloads.
+///
+/// This is the restart/query path for larger stores whose built LSH blocks have
+/// already been persisted by [`UpdatableIndex::checkpoint`]. It opens the
+/// segstore manifest without decoding source segments, then applies catalog
+/// tombstones to sidecar candidates at query time. If a sidecar is missing,
+/// stale by recipe, or not decodable, only that one source segment is decoded to
+/// rebuild the sidecar.
+pub struct SnapshotIndex {
+    catalog: SegmentCatalog<u32>,
+    config: BlockingConfig,
+    sidecar_recipe: String,
+    cache: RefCell<Cache>,
+}
+
+impl SnapshotIndex {
+    /// Open the last checkpoint under `dir` as a read-only search snapshot.
+    ///
+    /// WAL records after the last checkpoint are intentionally not visible;
+    /// checkpoint before opening a snapshot when newly added documents must be
+    /// searchable through this path.
+    pub fn open(dir: Arc<dyn Directory>, config: BlockingConfig) -> PersistenceResult<Self> {
+        Ok(Self {
+            catalog: SegmentCatalog::open(dir)?,
+            sidecar_recipe: make_sidecar_recipe(&config),
+            config,
+            cache: RefCell::new(Cache {
+                by_segment_id: HashMap::new(),
+            }),
+        })
+    }
+
+    /// Number of checkpointed immutable segments in this snapshot.
+    pub fn segment_count(&self) -> usize {
+        self.catalog.segment_count()
+    }
+
+    /// Number of tombstoned document ids in this snapshot.
+    pub fn tombstone_count(&self) -> usize {
+        self.catalog.tombstone_count()
+    }
+
+    /// Document ids that are near-duplicate candidates of `text`, unioned over
+    /// every live checkpointed document.
+    pub fn near_duplicates(&self, text: &str) -> PersistenceResult<Vec<u32>> {
+        self.near_duplicates_min_shared_bands(text, 1)
+    }
+
+    /// Document ids that share at least `min_shared_bands` MinHash LSH bands
+    /// with `text`, unioned over every live checkpointed document.
+    pub fn near_duplicates_min_shared_bands(
+        &self,
+        text: &str,
+        min_shared_bands: usize,
+    ) -> PersistenceResult<Vec<u32>> {
+        let mut out = self.collect_from_blocks(text, |lsh, ids, sig| {
+            lsh.query_sig_min_shared_bands(sig, min_shared_bands)
+                .into_iter()
+                .filter_map(|i| ids.get(i).copied())
+                .collect()
+        })?;
+        out.retain(|id| self.catalog.is_live(id));
+        out.sort_unstable();
+        out.dedup();
+        Ok(out)
+    }
+
+    /// Near-duplicate candidates of `text`, ranked by estimated Jaccard
+    /// similarity and deduplicated by document id.
+    pub fn near_duplicates_with_similarity(
+        &self,
+        text: &str,
+    ) -> PersistenceResult<Vec<(u32, f64)>> {
+        self.near_duplicates_with_similarity_min_shared_bands(text, 1)
+    }
+
+    /// Near-duplicate candidates sharing at least `min_shared_bands` MinHash LSH
+    /// bands with `text`, ranked by estimated Jaccard similarity and deduplicated
+    /// by document id.
+    pub fn near_duplicates_with_similarity_min_shared_bands(
+        &self,
+        text: &str,
+        min_shared_bands: usize,
+    ) -> PersistenceResult<Vec<(u32, f64)>> {
+        let mut by_id: HashMap<u32, f64> = HashMap::new();
+        for (id, sim) in self.collect_from_blocks(text, |lsh, ids, sig| {
+            lsh.query_sig_with_similarity_min_shared_bands(sig, min_shared_bands)
+                .into_iter()
+                .filter_map(|(i, sim)| ids.get(i).copied().map(|id| (id, sim)))
+                .collect()
+        })? {
+            if self.catalog.is_live(&id) {
+                by_id
+                    .entry(id)
+                    .and_modify(|existing| *existing = existing.max(sim))
+                    .or_insert(sim);
+            }
+        }
+        let mut out: Vec<(u32, f64)> = by_id.into_iter().collect();
+        out.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        Ok(out)
+    }
+
+    fn collect_from_blocks<T>(
+        &self,
+        text: &str,
+        mut f: impl FnMut(&MinHashTextLSH, &[u32], &crate::MinHashSignature) -> Vec<T>,
+    ) -> PersistenceResult<Vec<T>> {
+        let mut out: Vec<T> = Vec::new();
+        let mut sig = None;
+        let mut cache = self.cache.borrow_mut();
+        for &seg_id in self.catalog.segment_ids() {
+            if let Entry::Vacant(entry) = cache.by_segment_id.entry(seg_id) {
+                let block = self.build_or_load(seg_id)?;
+                entry.insert(block);
+            }
+            if let Some(Some((lsh, ids))) = cache.by_segment_id.get(&seg_id) {
+                let s = sig.get_or_insert_with(|| lsh.signature(text));
+                out.extend(f(lsh, ids, s));
+            }
+        }
+        Ok(out)
+    }
+
+    fn build_or_load(&self, seg_id: u64) -> PersistenceResult<Option<Block>> {
+        if let Some(block) = self.load_sidecar(seg_id) {
+            return Ok(Some(block));
+        }
+        let segment: Vec<(u32, String)> = self.catalog.read_segment(seg_id)?;
+        let block = self.build_live_index(&segment);
+        if let Some(block) = &block {
+            self.persist_sidecar(block, seg_id);
+        }
+        Ok(block)
+    }
+
+    fn load_sidecar(&self, seg_id: u64) -> Option<Block> {
+        let name = self.catalog.index_name(seg_id, INDEX_KIND);
+        if !self.catalog.dir().exists(&name) {
+            return None;
+        }
+        let mut bytes = Vec::new();
+        self.catalog
+            .dir()
+            .open_file(&name)
+            .ok()?
+            .read_to_end(&mut bytes)
+            .ok()?;
+        let block_bytes = decode_sidecar(&self.sidecar_recipe, &bytes)?;
+        let sidecar: BlockSidecar = postcard::from_bytes(block_bytes).ok()?;
+        Some(sidecar.block)
+    }
+
+    fn build_live_index(&self, batch: &[(u32, String)]) -> Option<Block> {
+        build_block_from_items(batch, &self.config, |id| self.catalog.is_live(id))
+    }
+
+    fn persist_sidecar(&self, block: &Block, seg_id: u64) {
+        let sidecar = BlockSidecar {
+            block: (block.0.clone(), block.1.clone()),
+        };
+        if let Ok(index) = postcard::to_allocvec(&sidecar) {
+            let Some(bytes) = encode_sidecar(&self.sidecar_recipe, &index) else {
+                return;
+            };
+            let _ = self
+                .catalog
+                .dir()
+                .atomic_write(&self.catalog.index_name(seg_id, INDEX_KIND), &bytes);
         }
     }
 }
@@ -461,10 +643,74 @@ impl UpdatableIndex {
 mod tests {
     use super::*;
     use durability::MemoryDirectory;
+    use std::io::Write;
+    use std::path::PathBuf;
+    use std::sync::Mutex;
 
     const A: &str = "the quick brown fox jumps over the lazy dog";
     const B: &str = "lorem ipsum dolor sit amet consectetur adipiscing elit";
     const C: &str = "the quick brown fox jumps over the lazy dog";
+
+    struct RecordingDirectory {
+        inner: Arc<dyn Directory>,
+        opened: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl RecordingDirectory {
+        fn wrap(inner: Arc<dyn Directory>) -> (Arc<dyn Directory>, Arc<Mutex<Vec<String>>>) {
+            let opened = Arc::new(Mutex::new(Vec::new()));
+            (
+                Arc::new(Self {
+                    inner,
+                    opened: opened.clone(),
+                }),
+                opened,
+            )
+        }
+    }
+
+    impl Directory for RecordingDirectory {
+        fn create_file(&self, path: &str) -> PersistenceResult<Box<dyn Write + Send>> {
+            self.inner.create_file(path)
+        }
+
+        fn open_file(&self, path: &str) -> PersistenceResult<Box<dyn Read + Send>> {
+            self.opened.lock().unwrap().push(path.to_string());
+            self.inner.open_file(path)
+        }
+
+        fn exists(&self, path: &str) -> bool {
+            self.inner.exists(path)
+        }
+
+        fn delete(&self, path: &str) -> PersistenceResult<()> {
+            self.inner.delete(path)
+        }
+
+        fn atomic_rename(&self, from: &str, to: &str) -> PersistenceResult<()> {
+            self.inner.atomic_rename(from, to)
+        }
+
+        fn create_dir_all(&self, path: &str) -> PersistenceResult<()> {
+            self.inner.create_dir_all(path)
+        }
+
+        fn list_dir(&self, path: &str) -> PersistenceResult<Vec<String>> {
+            self.inner.list_dir(path)
+        }
+
+        fn append_file(&self, path: &str) -> PersistenceResult<Box<dyn Write + Send>> {
+            self.inner.append_file(path)
+        }
+
+        fn atomic_write(&self, path: &str, data: &[u8]) -> PersistenceResult<()> {
+            self.inner.atomic_write(path, data)
+        }
+
+        fn file_path(&self, path: &str) -> Option<PathBuf> {
+            self.inner.file_path(path)
+        }
+    }
 
     fn read_file(dir: &Arc<dyn Directory>, name: &str) -> Vec<u8> {
         let mut bytes = Vec::new();
@@ -602,6 +848,34 @@ mod tests {
             dups.contains(&1) && dups.contains(&2),
             "search over loaded sidecars returns duplicate candidates"
         );
+    }
+
+    #[test]
+    fn sidecar_preserves_insertion_order_id_map_after_reopen() {
+        let dir = MemoryDirectory::arc();
+        {
+            let mut store =
+                UpdatableIndex::open(dir.clone(), 2, BlockingConfig::default()).unwrap();
+            store.add(20, A).unwrap();
+            store.add(10, B).unwrap();
+            store.checkpoint().unwrap();
+        }
+
+        let store = UpdatableIndex::open(dir.clone(), 2, BlockingConfig::default()).unwrap();
+        let dups = store.near_duplicates(A);
+        assert!(
+            dups.contains(&20),
+            "sidecar id map should keep insertion-order id 20 for the matching document"
+        );
+        assert!(
+            !dups.contains(&10),
+            "sorted sidecar ids would incorrectly map the hit to id 10"
+        );
+
+        let snapshot = SnapshotIndex::open(dir, BlockingConfig::default()).unwrap();
+        let dups = snapshot.near_duplicates(A).unwrap();
+        assert!(dups.contains(&20));
+        assert!(!dups.contains(&10));
     }
 
     #[test]
@@ -834,6 +1108,96 @@ mod tests {
         assert!(
             dups.contains(&1),
             "rewritten sidecar should keep live ids from the segment"
+        );
+    }
+
+    #[test]
+    fn snapshot_index_queries_sidecars_without_opening_segment_payloads() {
+        let dir = MemoryDirectory::arc();
+        {
+            let mut store =
+                UpdatableIndex::open(dir.clone(), 2, BlockingConfig::default()).unwrap();
+            store.add(1, A).unwrap();
+            store.add(2, C).unwrap();
+            store.add(3, B).unwrap();
+            store.add(4, "a separate unrelated document").unwrap();
+            store.checkpoint().unwrap();
+        }
+
+        let (watched, opened) = RecordingDirectory::wrap(dir);
+        let snapshot = SnapshotIndex::open(watched, BlockingConfig::default()).unwrap();
+        assert_eq!(snapshot.segment_count(), 2);
+        assert_eq!(snapshot.tombstone_count(), 0);
+        let dups = snapshot.near_duplicates(A).unwrap();
+        assert!(dups.contains(&1) && dups.contains(&2));
+
+        let opened = opened.lock().unwrap().clone();
+        assert!(
+            opened.iter().any(|path| path.starts_with("segstore.idx.")),
+            "snapshot should open persisted sidecars: {opened:?}"
+        );
+        assert!(
+            !opened.iter().any(|path| path.starts_with("segstore.seg.")),
+            "valid sidecars should avoid source segment payload reads: {opened:?}"
+        );
+    }
+
+    #[test]
+    fn snapshot_index_filters_tombstones_from_stale_sidecar_without_source_read() {
+        let dir = MemoryDirectory::arc();
+        let (name, stale_sidecar) = checkpointed_store(dir.clone());
+        {
+            let mut store =
+                UpdatableIndex::open(dir.clone(), 2, BlockingConfig::default()).unwrap();
+            store.delete(2).unwrap();
+            store.checkpoint().unwrap();
+            store
+                .inner
+                .dir()
+                .atomic_write(&name, &stale_sidecar)
+                .unwrap();
+        }
+
+        let (watched, opened) = RecordingDirectory::wrap(dir);
+        let snapshot = SnapshotIndex::open(watched, BlockingConfig::default()).unwrap();
+        assert_eq!(snapshot.tombstone_count(), 1);
+        let dups = snapshot.near_duplicates(A).unwrap();
+        assert!(dups.contains(&1), "live duplicate should remain searchable");
+        assert!(
+            !dups.contains(&2),
+            "deleted id 2 must not resurface from a stale sidecar"
+        );
+
+        let opened = opened.lock().unwrap().clone();
+        assert!(
+            opened.iter().any(|path| path.starts_with("segstore.idx.")),
+            "snapshot should use the stale sidecar before applying tombstones: {opened:?}"
+        );
+        assert!(
+            !opened.iter().any(|path| path.starts_with("segstore.seg.")),
+            "tombstone filtering should not require source segment payload reads: {opened:?}"
+        );
+    }
+
+    #[test]
+    fn snapshot_index_rebuilds_missing_sidecar_from_one_segment() {
+        let dir = MemoryDirectory::arc();
+        let (name, _) = checkpointed_store(dir.clone());
+        dir.delete(&name).unwrap();
+
+        let (watched, opened) = RecordingDirectory::wrap(dir.clone());
+        let snapshot = SnapshotIndex::open(watched, BlockingConfig::default()).unwrap();
+        let dups = snapshot.near_duplicates(A).unwrap();
+        assert!(dups.contains(&1) && dups.contains(&2));
+        assert!(
+            dir.exists(&name),
+            "snapshot fallback should persist the rebuilt sidecar"
+        );
+
+        let opened = opened.lock().unwrap().clone();
+        assert!(
+            opened.iter().any(|path| path.starts_with("segstore.seg.")),
+            "missing sidecar should fall back to one source segment read: {opened:?}"
         );
     }
 }

@@ -62,9 +62,9 @@ unchanged MinHash blocks instead of rebuilding them.
 `near_duplicates_with_similarity` ranks durable candidates by estimated Jaccard
 similarity while reusing one query signature across all segments.
 `near_duplicates_min_shared_bands` requires repeated band collisions when you
-want fewer, higher-precision candidates.
-The source text batches are still loaded by the current `segstore` open path;
-the sidecars avoid rebuilding LSH blocks.
+want fewer, higher-precision candidates. `store::SnapshotIndex` opens the last
+checkpoint manifest and queries sidecars first, so source text batches are read
+only when a sidecar is missing or unusable.
 Opt-in; the default build does not depend on segstore.
 
 ## License
