@@ -4,7 +4,7 @@
 [![Documentation](https://docs.rs/sketchir/badge.svg)](https://docs.rs/sketchir)
 [![CI](https://github.com/arclabs561/sketchir/actions/workflows/ci.yml/badge.svg)](https://github.com/arclabs561/sketchir/actions/workflows/ci.yml)
 
-Sketching primitives for IR.
+Sketching primitives for retrieval.
 
 MinHash, SimHash, and LSH indexes for near-duplicate detection and approximate
 similarity search.

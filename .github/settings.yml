@@ -2,7 +2,7 @@
 # https://github.com/repository-settings/app
 
 repository:
-  description: "Sketching primitives for IR"
+  description: "Sketching primitives for retrieval"
   homepage: "https://docs.rs/sketchir"
   private: false
   has_issues: true
