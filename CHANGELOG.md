@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `store::UpdatableIndex` now keys its in-memory MinHash block cache by
   segstore's stable segment ids instead of `Arc` pointers, and prunes stale cache
   entries when compaction/reclaim changes the segment set.
+- Store writer searches now build the temporary writer-buffer MinHash block from
+  the buffer slice instead of cloning buffered strings first.
 
 ### Fixed
 

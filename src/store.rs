@@ -282,8 +282,8 @@ impl UpdatableIndex {
                 }
             }
         }
-        let buffered = self.inner.buffer().to_vec();
-        if let Some((lsh, ids)) = self.build_live_index(&buffered) {
+        let buffered = self.inner.buffer();
+        if let Some((lsh, ids)) = self.build_live_index(buffered) {
             let s = sig.get_or_insert_with(|| lsh.signature(text));
             out.extend(f(&lsh, &ids, s));
         }
