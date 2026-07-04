@@ -49,6 +49,8 @@ Runnable examples live in [`examples/`](examples/):
 
 - `dedup_documents` indexes a document set and returns candidate near-duplicate pairs via MinHash LSH blocking.
 - `minhash_jaccard_validation` checks the MinHash Jaccard estimate against the exact Jaccard index, confirming the sketch is accurate before trusting it at scale.
+- `updatable_store` exercises the optional durable store: add documents, checkpoint,
+  delete one, reopen, and query ranked near-duplicates. Run with `--features store`.
 
 ## Updatable index (`store` feature)
 

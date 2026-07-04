@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `store::UpdatableIndex::{near_duplicates_min_shared_bands,near_duplicates_with_similarity_min_shared_bands}`
   apply the same minimum-shared-band filter across durable segments plus the
   unflushed buffer.
+- Added an `updatable_store` example covering add, checkpoint, delete, reopen,
+  and ranked near-duplicate search through the optional `store` feature.
 
 ### Changed
 

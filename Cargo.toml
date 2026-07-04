@@ -52,3 +52,7 @@ harness = false
 [[bench]]
 name = "store"
 harness = false
+
+[[example]]
+name = "updatable_store"
+required-features = ["store"]
