@@ -74,7 +74,7 @@ struct Cache {
 /// The `kind` tag for a persisted per-segment MinHash LSH sidecar.
 const INDEX_KIND: &str = "minhash";
 const SIDECAR_MAGIC: &[u8; 8] = b"SKIRIDX1";
-const SIDECAR_VERSION: u32 = 1;
+const SIDECAR_VERSION: u32 = 2;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct BlockSidecar {
@@ -90,20 +90,21 @@ fn make_sidecar_recipe(config: &BlockingConfig) -> String {
     )
 }
 
-fn encode_sidecar(recipe: &str, index: &[u8]) -> Option<Vec<u8>> {
+fn encode_sidecar(recipe: &str, seg_id: u64, index: &[u8]) -> Option<Vec<u8>> {
     let recipe = recipe.as_bytes();
     let recipe_len = u32::try_from(recipe.len()).ok()?;
-    let mut bytes = Vec::with_capacity(16 + recipe.len() + index.len());
+    let mut bytes = Vec::with_capacity(24 + recipe.len() + index.len());
     bytes.extend_from_slice(SIDECAR_MAGIC);
     bytes.extend_from_slice(&SIDECAR_VERSION.to_le_bytes());
+    bytes.extend_from_slice(&seg_id.to_le_bytes());
     bytes.extend_from_slice(&recipe_len.to_le_bytes());
     bytes.extend_from_slice(recipe);
     bytes.extend_from_slice(index);
     Some(bytes)
 }
 
-fn decode_sidecar<'a>(recipe: &str, bytes: &'a [u8]) -> Option<&'a [u8]> {
-    if bytes.len() < 16 {
+fn decode_sidecar<'a>(recipe: &str, seg_id: u64, bytes: &'a [u8]) -> Option<&'a [u8]> {
+    if bytes.len() < 24 {
         return None;
     }
     if &bytes[..8] != SIDECAR_MAGIC {
@@ -113,8 +114,12 @@ fn decode_sidecar<'a>(recipe: &str, bytes: &'a [u8]) -> Option<&'a [u8]> {
     if version != SIDECAR_VERSION {
         return None;
     }
-    let recipe_len = u32::from_le_bytes(bytes[12..16].try_into().ok()?) as usize;
-    let recipe_start = 16usize;
+    let encoded_seg_id = u64::from_le_bytes(bytes[12..20].try_into().ok()?);
+    if encoded_seg_id != seg_id {
+        return None;
+    }
+    let recipe_len = u32::from_le_bytes(bytes[20..24].try_into().ok()?) as usize;
+    let recipe_start = 24usize;
     let recipe_end = recipe_start.checked_add(recipe_len)?;
     if bytes.len() < recipe_end {
         return None;
@@ -399,7 +404,7 @@ impl UpdatableIndex {
             .ok()?
             .read_to_end(&mut bytes)
             .ok()?;
-        let block_bytes = self.decode_sidecar(&bytes)?;
+        let block_bytes = self.decode_sidecar(&bytes, seg_id)?;
         let sidecar: BlockSidecar = postcard::from_bytes(block_bytes).ok()?;
         if sidecar.block.1 == self.live_id_map(seg) {
             Some(sidecar.block)
@@ -415,7 +420,7 @@ impl UpdatableIndex {
             block: (block.0.clone(), block.1.clone()),
         };
         if let Ok(index) = postcard::to_allocvec(&sidecar) {
-            let Some(bytes) = self.encode_sidecar(&index) else {
+            let Some(bytes) = self.encode_sidecar(&index, seg_id) else {
                 return;
             };
             if self
@@ -435,12 +440,12 @@ impl UpdatableIndex {
             .collect()
     }
 
-    fn encode_sidecar(&self, index: &[u8]) -> Option<Vec<u8>> {
-        encode_sidecar(&self.sidecar_recipe, index)
+    fn encode_sidecar(&self, index: &[u8], seg_id: u64) -> Option<Vec<u8>> {
+        encode_sidecar(&self.sidecar_recipe, seg_id, index)
     }
 
-    fn decode_sidecar<'a>(&self, bytes: &'a [u8]) -> Option<&'a [u8]> {
-        decode_sidecar(&self.sidecar_recipe, bytes)
+    fn decode_sidecar<'a>(&self, bytes: &'a [u8], seg_id: u64) -> Option<&'a [u8]> {
+        decode_sidecar(&self.sidecar_recipe, seg_id, bytes)
     }
 
     /// Persist sidecars for sealed segments that lack a current one. This is
@@ -614,7 +619,7 @@ impl SnapshotIndex {
             .ok()?
             .read_to_end(&mut bytes)
             .ok()?;
-        let block_bytes = decode_sidecar(&self.sidecar_recipe, &bytes)?;
+        let block_bytes = decode_sidecar(&self.sidecar_recipe, seg_id, &bytes)?;
         let sidecar: BlockSidecar = postcard::from_bytes(block_bytes).ok()?;
         Some(sidecar.block)
     }
@@ -628,7 +633,7 @@ impl SnapshotIndex {
             block: (block.0.clone(), block.1.clone()),
         };
         if let Ok(index) = postcard::to_allocvec(&sidecar) {
-            let Some(bytes) = encode_sidecar(&self.sidecar_recipe, &index) else {
+            let Some(bytes) = encode_sidecar(&self.sidecar_recipe, seg_id, &index) else {
                 return;
             };
             let _ = self
@@ -977,26 +982,32 @@ mod tests {
         let store =
             UpdatableIndex::open(MemoryDirectory::arc(), 2, BlockingConfig::default()).unwrap();
         let block = b"block-bytes";
-        let bytes = store.encode_sidecar(block).unwrap();
-        assert_eq!(store.decode_sidecar(&bytes), Some(block.as_slice()));
+        let seg_id = 7;
+        let bytes = store.encode_sidecar(block, seg_id).unwrap();
+        assert_eq!(store.decode_sidecar(&bytes, seg_id), Some(block.as_slice()));
 
-        assert!(store.decode_sidecar(&bytes[..8]).is_none());
+        assert!(store.decode_sidecar(&bytes[..8], seg_id).is_none());
 
         let mut bad_magic = bytes.clone();
         bad_magic[0] ^= 0xFF;
-        assert!(store.decode_sidecar(&bad_magic).is_none());
+        assert!(store.decode_sidecar(&bad_magic, seg_id).is_none());
 
         let mut bad_version = bytes.clone();
         bad_version[8..12].copy_from_slice(&(SIDECAR_VERSION + 1).to_le_bytes());
-        assert!(store.decode_sidecar(&bad_version).is_none());
+        assert!(store.decode_sidecar(&bad_version, seg_id).is_none());
+
+        assert!(
+            store.decode_sidecar(&bytes, seg_id + 1).is_none(),
+            "sidecar must not load for a different segment id"
+        );
 
         let mut bad_recipe_len = bytes.clone();
-        bad_recipe_len[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
-        assert!(store.decode_sidecar(&bad_recipe_len).is_none());
+        bad_recipe_len[20..24].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(store.decode_sidecar(&bad_recipe_len, seg_id).is_none());
 
         let mut bad_recipe = bytes.clone();
-        bad_recipe[16] ^= 0x01;
-        assert!(store.decode_sidecar(&bad_recipe).is_none());
+        bad_recipe[24] ^= 0x01;
+        assert!(store.decode_sidecar(&bad_recipe, seg_id).is_none());
     }
 
     #[test]
@@ -1005,8 +1016,9 @@ mod tests {
         let (name, _) = checkpointed_store(dir.clone());
         {
             let store = UpdatableIndex::open(dir.clone(), 2, BlockingConfig::default()).unwrap();
+            let seg_id = store.inner.segment_ids()[0];
             let corrupt = store
-                .encode_sidecar(b"not-a-postcard-minhash-block")
+                .encode_sidecar(b"not-a-postcard-minhash-block", seg_id)
                 .unwrap();
             store.inner.dir().atomic_write(&name, &corrupt).unwrap();
         }
@@ -1176,6 +1188,46 @@ mod tests {
         assert!(
             !opened.iter().any(|path| path.starts_with("segstore.seg.")),
             "tombstone filtering should not require source segment payload reads: {opened:?}"
+        );
+    }
+
+    #[test]
+    fn snapshot_index_rebuilds_sidecar_with_wrong_segment_id() {
+        let dir = MemoryDirectory::arc();
+        {
+            let mut store =
+                UpdatableIndex::open(dir.clone(), 2, BlockingConfig::default()).unwrap();
+            store.add(1, A).unwrap();
+            store.add(2, C).unwrap();
+            store.add(3, B).unwrap();
+            store.add(4, "a separate unrelated document").unwrap();
+            store.checkpoint().unwrap();
+
+            let ids = store.inner.segment_ids();
+            assert_eq!(ids.len(), 2, "test setup should create two segments");
+            let first = read_file(
+                store.inner.dir(),
+                &store.inner.index_name(ids[0], INDEX_KIND),
+            );
+            store
+                .inner
+                .dir()
+                .atomic_write(&store.inner.index_name(ids[1], INDEX_KIND), &first)
+                .unwrap();
+        }
+
+        let (watched, opened) = RecordingDirectory::wrap(dir);
+        let snapshot = SnapshotIndex::open(watched, BlockingConfig::default()).unwrap();
+        let dups = snapshot.near_duplicates(B).unwrap();
+        assert!(
+            dups.contains(&3),
+            "segment 1 should be rebuilt and searched after rejecting the copied sidecar: {dups:?}"
+        );
+
+        let opened = opened.lock().unwrap().clone();
+        assert!(
+            opened.iter().any(|path| path == "segstore.seg.1"),
+            "wrong-segment sidecar should fall back to that source segment: {opened:?}"
         );
     }
 

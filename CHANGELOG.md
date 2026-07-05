@@ -42,6 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Store sidecar envelopes now include the `segstore` segment id, so a copied or
+  misnamed MinHash sidecar is rejected and rebuilt instead of being accepted for
+  a different segment.
 - MinHash store sidecars now persist the insertion-order id map used by the LSH
   result indices instead of sorting live ids, preventing reopened indexes from
   remapping hits to the wrong document id when ids were inserted out of order.
