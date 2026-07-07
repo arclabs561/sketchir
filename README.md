@@ -2,7 +2,6 @@
 
 [![crates.io](https://img.shields.io/crates/v/sketchir.svg)](https://crates.io/crates/sketchir)
 [![Documentation](https://docs.rs/sketchir/badge.svg)](https://docs.rs/sketchir)
-[![CI](https://github.com/arclabs561/sketchir/actions/workflows/ci.yml/badge.svg)](https://github.com/arclabs561/sketchir/actions/workflows/ci.yml)
 
 Sketching primitives for retrieval.
 

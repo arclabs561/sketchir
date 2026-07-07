@@ -1,12 +1,13 @@
 //! Property-based tests for probabilistic correctness guarantees.
 //!
 //! These tests verify that the sketching primitives satisfy their statistical
-//! contracts over many random inputs, not just hand-crafted examples.
+//! contracts over generated inputs and hand-crafted examples.
 
 use proptest::prelude::*;
 use std::collections::HashSet;
 
 use sketchir::cross_polytope::CrossPolytopeHasher;
+use sketchir::hyperplane::HyperplaneHasher;
 use sketchir::minhash::MinHash;
 use sketchir::simhash::simhash_fingerprint;
 use sketchir::{DenseSimHashLSH, LSHIndex};
@@ -152,38 +153,33 @@ fn to_simhash_features(v: &[f64]) -> Vec<(u64, f32)> {
 }
 
 proptest! {
-    /// SimHash collision rate estimates angular similarity.
+    /// Random hyperplane signatures estimate angular similarity.
     ///
-    /// We test the statistical property over many independent SimHash instances:
-    /// for two vectors with known angle theta, the average collision rate across
-    /// N random projections should be close to 1 - theta/pi.
-    ///
-    /// Strategy: generate two vectors, compute their exact angle, then verify that
-    /// the Hamming distance (collision rate) matches the expected angle-based prediction
-    /// within a statistical bound. We simulate multiple projections by repeating with
-    /// different feature hash seeds.
-    ///
-    /// With 64 bits per fingerprint the angular estimate has std ~pi/(2*sqrt(64)) ≈ 0.20
-    /// radians. We allow 0.5 rad slack (> 2 sigma) to keep false failure rate < 2%.
+    /// With 1024 hyperplanes the angle estimator has standard deviation at most
+    /// pi / (2 * sqrt(1024)) radians. The bound below leaves enough slack for
+    /// deterministic RNG imperfections and `f32` projection arithmetic.
     #[test]
-    fn simhash_hamming_tracks_angle(
+    fn hyperplane_hamming_tracks_angle(
         (a, b) in two_vectors(32),
+        seed in 0u64..u64::MAX,
     ) {
-        let fa = to_simhash_features(&a);
-        let fb = to_simhash_features(&b);
-        let fp_a = simhash_fingerprint(&fa);
-        let fp_b = simhash_fingerprint(&fb);
+        const NUM_BITS: usize = 1024;
+        let hasher = HyperplaneHasher::new(32, NUM_BITS, seed).unwrap();
+        let a32: Vec<f32> = a.iter().map(|&x| x as f32).collect();
+        let b32: Vec<f32> = b.iter().map(|&x| x as f32).collect();
+        let sig_a = hasher.hash(&a32).unwrap();
+        let sig_b = hasher.hash(&b32).unwrap();
 
-        let collision_rate = 1.0 - fp_a.hamming_distance(&fp_b) as f64 / 64.0;
         let exact = exact_cosine(&a, &b);
-        // exact angle in [0, pi]; estimated angle from collision rate
         let exact_angle = exact.acos();
-        let estimated_angle = (1.0 - collision_rate) * std::f64::consts::PI;
+        let estimated_angle =
+            HyperplaneHasher::distance(&sig_a, &sig_b) as f64 * std::f64::consts::PI
+                / NUM_BITS as f64;
 
-        let bound = 0.8; // generous: ~4 sigma in angle space
+        let bound = 0.30;
         prop_assert!(
             (estimated_angle - exact_angle).abs() <= bound,
-            "SimHash angle estimate {:.4} rad vs exact {:.4} rad, bound {:.4}",
+            "hyperplane angle estimate {:.4} rad vs exact {:.4} rad, bound {:.4}",
             estimated_angle, exact_angle, bound
         );
     }
