@@ -10,7 +10,7 @@ similarity search.
 
 ```toml
 [dependencies]
-sketchir = "0.5"
+sketchir = "0.6"
 ```
 
 ## Best starting points
