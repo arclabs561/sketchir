@@ -31,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Updated the optional `store` stack to `segstore` 0.5 and `durability` 0.7.1,
+  using `segstore::DefaultStore` for source-text segments and
+  `segstore::SidecarEnvelope` for checked MinHash sidecar framing.
 - `store::UpdatableIndex` now keys its in-memory MinHash block cache by
   segstore's stable segment ids instead of `Arc` pointers, and prunes stale cache
   entries when compaction/reclaim changes the segment set.
