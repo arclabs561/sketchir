@@ -731,6 +731,39 @@ mod tests {
     }
 
     #[test]
+    fn live_candidate_set_survives_checkpoint_tier_reclaim_and_compact() {
+        let dir = MemoryDirectory::arc();
+        let mut store = UpdatableIndex::open(dir.clone(), 2, BlockingConfig::default()).unwrap();
+        for id in 1..=8 {
+            store.add(id, A).unwrap();
+        }
+        store.checkpoint().unwrap();
+        assert_eq!(store.near_duplicates(A), (1..=8).collect::<Vec<_>>());
+
+        store.delete(2).unwrap();
+        store.delete(5).unwrap();
+        let expected = vec![1, 3, 4, 6, 7, 8];
+        store.checkpoint().unwrap();
+        assert_eq!(store.near_duplicates(A), expected);
+
+        store.compact_tiers().unwrap();
+        assert_eq!(store.near_duplicates(A), expected);
+        let snapshot = SnapshotIndex::open(dir.clone(), BlockingConfig::default()).unwrap();
+        assert_eq!(snapshot.near_duplicates(A).unwrap(), expected);
+
+        let before_reclaim = store.space_amplification().unwrap();
+        store.reclaim(0.9).unwrap();
+        assert_eq!(store.near_duplicates(A), expected);
+        assert!(store.space_amplification().unwrap() <= before_reclaim);
+
+        store.compact().unwrap();
+        assert_eq!(store.near_duplicates(A), expected);
+        assert_eq!(store.space_amplification(), Some(1.0));
+        let reopened = UpdatableIndex::open(dir, 2, BlockingConfig::default()).unwrap();
+        assert_eq!(reopened.near_duplicates(A), expected);
+    }
+
+    #[test]
     fn near_duplicates_with_similarity_covers_segments_and_buffer() {
         let dir = MemoryDirectory::arc();
         let mut store = UpdatableIndex::open(dir, 2, BlockingConfig::default()).unwrap();

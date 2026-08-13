@@ -202,7 +202,9 @@ impl MultibitLSH {
         Ok(())
     }
 
-    /// Search for the top-k nearest candidates.
+    /// Search for the top-k nearest candidates using exact cosine-distance
+    /// ranking within the matching hash buckets. Inputs need not be normalized.
+    /// Cosine distance involving a zero vector is defined as `1.0`.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, Error> {
         if !self.built {
             return Err(Error::NotBuilt);
@@ -232,7 +234,7 @@ impl MultibitLSH {
             .iter()
             .map(|&idx| {
                 let v = self.get_vector(idx as usize);
-                let dist = 1.0 - dot(query, v);
+                let dist = cosine_distance(query, v);
                 (idx, dist)
             })
             .collect();
@@ -311,6 +313,20 @@ fn quantize_scalar(value: f64, boundaries: &[f64]) -> u32 {
 
 pub(crate) fn dot(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+}
+
+pub(crate) fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
+    let dot_ab: f64 = a
+        .iter()
+        .zip(b)
+        .map(|(&left, &right)| f64::from(left) * f64::from(right))
+        .sum();
+    let norm_a: f64 = a.iter().map(|&value| f64::from(value).powi(2)).sum();
+    let norm_b: f64 = b.iter().map(|&value| f64::from(value).powi(2)).sum();
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 1.0;
+    }
+    (1.0 - (dot_ab / (norm_a.sqrt() * norm_b.sqrt())).clamp(-1.0, 1.0)) as f32
 }
 
 /// Gaussian quantile function (inverse CDF), Acklam's rational approximation.
@@ -418,6 +434,48 @@ mod tests {
             results.iter().any(|(idx, _)| *idx == 0),
             "v1 should be in results: {results:?}"
         );
+    }
+
+    #[test]
+    fn search_ranks_colliding_candidates_by_cosine_distance() {
+        let config = MultibitConfig::simhash(1, 1);
+        let mut idx = MultibitLSH::new(2, config).unwrap();
+        let plane = idx.hyperplanes[0].clone();
+        let perpendicular = [-plane[1], plane[0]];
+        let distractor = [
+            plane[0] + 100.0 * perpendicular[0],
+            plane[1] + 100.0 * perpendicular[1],
+        ];
+        let aligned = [0.5 * plane[0], 0.5 * plane[1]];
+        idx.add(&distractor).unwrap();
+        idx.add(&aligned).unwrap();
+        idx.build().unwrap();
+
+        let actual = idx.search(&plane, 2).unwrap();
+        let mut expected = [
+            (0, cosine_distance(&plane, &distractor)),
+            (1, cosine_distance(&plane, &aligned)),
+        ];
+        expected.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+
+        assert_eq!(
+            actual.len(),
+            2,
+            "fixture candidates must share the hash bucket"
+        );
+        for ((actual_id, actual_distance), (expected_id, expected_distance)) in
+            actual.iter().zip(expected)
+        {
+            assert_eq!(*actual_id, expected_id);
+            assert!((actual_distance - expected_distance).abs() <= 1e-6);
+        }
+    }
+
+    #[test]
+    fn cosine_distance_is_scale_invariant_for_tiny_finite_vectors() {
+        let direction = [1.0, -2.0];
+        let tiny = [1e-20, -2e-20];
+        assert!(cosine_distance(&direction, &tiny) <= 1e-6);
     }
 
     #[test]

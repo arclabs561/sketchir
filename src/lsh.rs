@@ -3,7 +3,7 @@
 //! This module is intentionally small and deterministic. It provides:
 //! - banding-based LSH for [`MinHashSignature`]
 //! - bit-sampling LSH for [`SimHashFingerprint`]
-//! - random-projection LSH for dense vectors (cosine-ish)
+//! - random-projection LSH for dense vectors (cosine distance)
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -371,7 +371,9 @@ impl LSHIndex {
         Ok(())
     }
 
-    /// Search for the top-k nearest candidates using hash buckets + exact verification.
+    /// Search for the top-k nearest candidates using hash buckets followed by
+    /// exact cosine-distance ranking. Inputs need not be normalized. Cosine
+    /// distance involving a zero vector is defined as `1.0`.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, Error> {
         if !self.built {
             return Err(Error::NotBuilt);
@@ -401,7 +403,7 @@ impl LSHIndex {
             .iter()
             .map(|&idx| {
                 let v = self.get_vector(idx as usize);
-                let dist = 1.0 - dot(query, v);
+                let dist = cosine_distance(query, v);
                 (idx, dist)
             })
             .collect();
@@ -428,7 +430,7 @@ impl LSHIndex {
     }
 }
 
-use crate::multibit::dot;
+use crate::multibit::{cosine_distance, dot};
 
 #[cfg(test)]
 mod tests {
@@ -506,6 +508,52 @@ mod tests {
         ix.build().unwrap();
         let r = ix.search(&[1.0, 0.0], 2).unwrap();
         assert!(!r.is_empty());
+    }
+
+    #[test]
+    fn random_projection_search_ranks_colliding_candidates_by_cosine_distance() {
+        let mut ix = LSHIndex::new(2, 1, 1).unwrap();
+        let plane = ix.hash_functions.first().cloned().unwrap_or_default();
+        assert!(
+            plane.is_empty(),
+            "hash functions are generated during build"
+        );
+
+        // The deterministic first plane for these parameters is reconstructed
+        // by a probe index, then used to make two guaranteed bucket collisions.
+        ix.add(vec![1.0, 0.0]).unwrap();
+        ix.build().unwrap();
+        let plane = ix.hash_functions[0].clone();
+
+        let mut ranked = LSHIndex::new(2, 1, 1).unwrap();
+        let perpendicular = [-plane[1], plane[0]];
+        let distractor = vec![
+            plane[0] + 100.0 * perpendicular[0],
+            plane[1] + 100.0 * perpendicular[1],
+        ];
+        let aligned = vec![0.5 * plane[0], 0.5 * plane[1]];
+        ranked.add(distractor.clone()).unwrap();
+        ranked.add(aligned.clone()).unwrap();
+        ranked.build().unwrap();
+
+        let actual = ranked.search(&plane, 2).unwrap();
+        let mut expected = [
+            (0, cosine_distance(&plane, &distractor)),
+            (1, cosine_distance(&plane, &aligned)),
+        ];
+        expected.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+
+        assert_eq!(
+            actual.len(),
+            2,
+            "fixture candidates must share the hash bucket"
+        );
+        for ((actual_id, actual_distance), (expected_id, expected_distance)) in
+            actual.iter().zip(expected)
+        {
+            assert_eq!(*actual_id, expected_id);
+            assert!((actual_distance - expected_distance).abs() <= 1e-6);
+        }
     }
 
     // DETERMINISM CANARY
