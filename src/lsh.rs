@@ -28,6 +28,9 @@ impl MinHashLSH {
         if bands == 0 || rows_per_band == 0 {
             return Err(Error::InvalidParam("bands and rows_per_band must be >= 1"));
         }
+        bands
+            .checked_mul(rows_per_band)
+            .ok_or(Error::InvalidParam("bands * rows_per_band overflow"))?;
         Ok(Self {
             bands,
             rows_per_band,
@@ -66,7 +69,13 @@ impl MinHashLSH {
     }
 
     /// Return candidate document IDs that share at least one band bucket.
+    ///
+    /// A signature whose length differs from [`Self::expected_signature_len`]
+    /// cannot belong to this index and returns no candidates.
     pub fn query(&self, signature: &MinHashSignature) -> Vec<usize> {
+        if signature.values.len() != self.expected_signature_len() {
+            return Vec::new();
+        }
         let mut candidates: HashSet<usize> = HashSet::new();
         for (band_idx, chunk) in signature
             .values
@@ -88,12 +97,16 @@ impl MinHashLSH {
     /// buckets with `signature`.
     ///
     /// A threshold of `0` is treated as `1`, matching [`Self::query`]. A threshold
-    /// larger than the configured band count has no possible matches.
+    /// larger than the configured band count has no possible matches. A
+    /// signature with the wrong length also returns no candidates.
     pub fn query_min_shared_bands(
         &self,
         signature: &MinHashSignature,
         min_shared_bands: usize,
     ) -> Vec<usize> {
+        if signature.values.len() != self.expected_signature_len() {
+            return Vec::new();
+        }
         let min_shared_bands = min_shared_bands.max(1);
         if min_shared_bands == 1 {
             return self.query(signature);
@@ -442,6 +455,37 @@ mod tests {
         let mh = MinHash::new(8).unwrap(); // produces 8
         let items: StdHashSet<&str> = ["x"].into_iter().collect();
         assert!(ix.insert(mh.signature(&items)).is_err());
+    }
+
+    #[test]
+    fn minhash_lsh_rejects_signature_length_overflow() {
+        assert!(matches!(
+            MinHashLSH::new(usize::MAX, 2),
+            Err(Error::InvalidParam("bands * rows_per_band overflow"))
+        ));
+    }
+
+    #[test]
+    fn minhash_lsh_wrong_length_queries_return_no_candidates() {
+        let mut ix = MinHashLSH::new(2, 2).unwrap();
+        let indexed = MinHashSignature {
+            values: vec![1, 2, 3, 4],
+        };
+        ix.insert(indexed).unwrap();
+
+        for query in [
+            MinHashSignature { values: vec![1, 2] },
+            MinHashSignature {
+                values: vec![1, 2, 3, 4, 5, 6],
+            },
+        ] {
+            assert!(ix.query(&query).is_empty());
+            assert!(ix.query_min_shared_bands(&query, 2).is_empty());
+            assert!(ix.query_with_similarity(&query).is_empty());
+            assert!(ix
+                .query_with_similarity_min_shared_bands(&query, 2)
+                .is_empty());
+        }
     }
 
     #[test]

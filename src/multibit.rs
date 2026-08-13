@@ -106,6 +106,17 @@ impl MultibitLSH {
         if config.num_tables == 0 {
             return Err(Error::InvalidParam("num_tables must be >= 1"));
         }
+        let fingerprint_bits = config
+            .num_projections
+            .checked_mul(config.bits_per_projection as usize)
+            .ok_or(Error::InvalidParam(
+                "num_projections * bits_per_projection overflow",
+            ))?;
+        if fingerprint_bits > 64 {
+            return Err(Error::InvalidParam(
+                "num_projections * bits_per_projection must be <= 64",
+            ));
+        }
 
         // Compute Gaussian quantile boundaries for the bins.
         // For k bits we have 2^k bins and 2^k - 1 interior boundaries.
@@ -115,7 +126,10 @@ impl MultibitLSH {
             .collect();
 
         // Generate deterministic hyperplanes
-        let total_projections = config.num_tables * config.num_projections;
+        let total_projections = config
+            .num_tables
+            .checked_mul(config.num_projections)
+            .ok_or(Error::InvalidParam("num_tables * num_projections overflow"))?;
         let mut rng_state = 0xDEADBEEF_u64
             ^ (dimension as u64)
             ^ ((config.num_tables as u64) << 32)
@@ -514,6 +528,37 @@ mod tests {
         let config = MultibitConfig::multibit(4, 2, 1);
         let mut idx = MultibitLSH::new(8, config).unwrap();
         assert!(idx.add(&[1.0, 2.0]).is_err()); // wrong dimension
+    }
+
+    #[test]
+    fn fingerprint_width_must_fit_in_u64() {
+        let exact = MultibitConfig::multibit(8, 8, 1);
+        assert_eq!(MultibitLSH::new(4, exact).unwrap().fingerprint_bits(), 64);
+
+        let too_wide = MultibitConfig::multibit(9, 8, 1);
+        assert!(matches!(
+            MultibitLSH::new(4, too_wide),
+            Err(Error::InvalidParam(
+                "num_projections * bits_per_projection must be <= 64"
+            ))
+        ));
+
+        let overflow = MultibitConfig::multibit(usize::MAX, 8, 1);
+        assert!(matches!(
+            MultibitLSH::new(4, overflow),
+            Err(Error::InvalidParam(
+                "num_projections * bits_per_projection overflow"
+            ))
+        ));
+    }
+
+    #[test]
+    fn total_projection_count_overflow_is_rejected() {
+        let config = MultibitConfig::multibit(64, 1, usize::MAX);
+        assert!(matches!(
+            MultibitLSH::new(4, config),
+            Err(Error::InvalidParam("num_tables * num_projections overflow"))
+        ));
     }
 
     #[test]
