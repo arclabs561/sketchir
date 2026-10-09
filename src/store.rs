@@ -138,7 +138,9 @@ impl UpdatableIndex {
     /// Add (or re-add) a document by id.
     pub fn add(&mut self, id: u32, text: impl Into<String>) -> PersistenceResult<()> {
         // A sealed add introduces a new segment id; existing segment ids stay
-        // stable, so the cache reuses them and builds only the new one.
+        // stable, so the cache reuses them and builds only the new one. A re-add
+        // supersedes the old sealed copy, which changes that segment's live set.
+        self.invalidate_live_segment_of(id);
         self.inner.add(id, text.into())?;
         Ok(())
     }
@@ -153,31 +155,37 @@ impl UpdatableIndex {
         &mut self,
         docs: impl IntoIterator<Item = (u32, String)>,
     ) -> PersistenceResult<()> {
+        let docs: Vec<(u32, String)> = docs.into_iter().collect();
+        for (id, _) in &docs {
+            self.invalidate_live_segment_of(*id);
+        }
         self.inner.extend(docs)?;
         Ok(())
     }
 
     /// Tombstone a document.
     pub fn delete(&mut self, id: u32) -> PersistenceResult<()> {
+        // Look up the owning segment before the delete clears it.
+        self.invalidate_live_segment_of(id);
         self.inner.delete(id)?;
-        // A tombstone only changes the live-set of the segment that holds `id`, so
-        // invalidate just that segment's cached block -- not the whole cache --
-        // and remove its now-stale sidecar. The live-id guard would reject it
-        // anyway; deleting avoids a wasted load on the next query.
-        let mut cache = self.cache.borrow_mut();
-        let ids = self.inner.segment_ids();
-        for (seg_idx, seg) in self.inner.segments().iter().enumerate() {
-            if seg.iter().any(|(sid, _)| *sid == id) {
-                let seg_id = ids[seg_idx];
-                cache.by_segment_id.remove(&seg_id);
-                self.persisted.borrow_mut().remove(&seg_id);
-                let _ = self
-                    .inner
-                    .dir()
-                    .delete(&self.inner.index_name(seg_id, INDEX_KIND));
-            }
-        }
         Ok(())
+    }
+
+    /// A re-add or tombstone only changes the live set of the segment that
+    /// holds `id`'s live copy, so invalidate just that segment's cached block
+    /// -- not the whole cache -- and remove its now-stale sidecar. The live-id
+    /// guard would reject it anyway; deleting avoids a wasted load on the next
+    /// query.
+    fn invalidate_live_segment_of(&self, id: u32) {
+        let Some(seg_id) = self.inner.live_segment_of(&id) else {
+            return;
+        };
+        self.cache.borrow_mut().by_segment_id.remove(&seg_id);
+        self.persisted.borrow_mut().remove(&seg_id);
+        let _ = self
+            .inner
+            .dir()
+            .delete(&self.inner.index_name(seg_id, INDEX_KIND));
     }
 
     /// Merge segments (dropping tombstoned docs) and persist a checkpoint.
@@ -324,9 +332,16 @@ impl UpdatableIndex {
     }
 
     /// Build a MinHash LSH over the live documents of `batch` (None if empty),
-    /// keeping the insertion-order id map alongside.
+    /// keeping the insertion-order id map alongside. For the writer buffer:
+    /// segstore keeps at most one buffered copy per id and none tombstoned.
     fn build_live_index(&self, batch: &[(u32, String)]) -> Option<Block> {
         build_block_from_items(batch, &self.config, |id| self.inner.is_live(id))
+    }
+
+    /// Build a MinHash LSH over the live copies in sealed segment `seg_id`. A
+    /// copy superseded by a later re-add is not live.
+    fn build_segment_index(&self, seg: &[(u32, String)], seg_id: u64) -> Option<Block> {
+        build_block_from_items(seg, &self.config, |id| self.inner.is_live_in(seg_id, id))
     }
 
     /// Load segment `seg_id`'s persisted MinHash sidecar, or build it over the
@@ -336,7 +351,7 @@ impl UpdatableIndex {
             self.persisted.borrow_mut().insert(seg_id);
             return Some(block);
         }
-        let block = self.build_live_index(seg)?;
+        let block = self.build_segment_index(seg, seg_id)?;
         self.persist_sidecar(&block, seg_id);
         Some(block)
     }
@@ -358,7 +373,7 @@ impl UpdatableIndex {
             .ok()?;
         let block_bytes = self.decode_sidecar(&bytes, seg_id)?;
         let sidecar: BlockSidecar = postcard::from_bytes(block_bytes).ok()?;
-        if sidecar.block.1 == self.live_id_map(seg) {
+        if sidecar.block.1 == self.live_id_map(seg, seg_id) {
             Some(sidecar.block)
         } else {
             None
@@ -386,9 +401,9 @@ impl UpdatableIndex {
         }
     }
 
-    fn live_id_map(&self, seg: &[(u32, String)]) -> Vec<u32> {
+    fn live_id_map(&self, seg: &[(u32, String)], seg_id: u64) -> Vec<u32> {
         seg.iter()
-            .filter_map(|(id, _)| self.inner.is_live(id).then_some(*id))
+            .filter_map(|(id, _)| self.inner.is_live_in(seg_id, id).then_some(*id))
             .collect()
     }
 
@@ -415,7 +430,7 @@ impl UpdatableIndex {
                 self.persisted.borrow_mut().insert(seg_id);
                 continue;
             }
-            if let Some(block) = self.build_live_index(&seg[..]) {
+            if let Some(block) = self.build_segment_index(&seg[..], seg_id) {
                 self.persist_sidecar(&block, seg_id);
             }
         }
@@ -427,8 +442,9 @@ impl UpdatableIndex {
 ///
 /// This is the restart/query path for larger stores whose built LSH blocks have
 /// already been persisted by [`UpdatableIndex::checkpoint`]. It opens the
-/// segstore manifest without decoding source segments, then applies catalog
-/// tombstones to sidecar candidates at query time. If a sidecar is missing,
+/// segstore manifest without decoding source segments, then drops sidecar
+/// candidates that are no longer live in their segment (tombstoned or re-added
+/// later) at query time. If a sidecar is missing,
 /// stale by recipe, or not decodable, only that one source segment is decoded to
 /// rebuild the sidecar.
 pub struct SnapshotIndex {
@@ -478,13 +494,16 @@ impl SnapshotIndex {
         text: &str,
         min_shared_bands: usize,
     ) -> PersistenceResult<Vec<u32>> {
-        let mut out = self.collect_from_blocks(text, |lsh, ids, sig| {
-            lsh.query_sig_min_shared_bands(sig, min_shared_bands)
-                .into_iter()
-                .filter_map(|i| ids.get(i).copied())
-                .collect()
-        })?;
-        out.retain(|id| self.catalog.is_live(id));
+        let mut out = self.collect_from_blocks(
+            text,
+            |lsh, ids, sig| {
+                lsh.query_sig_min_shared_bands(sig, min_shared_bands)
+                    .into_iter()
+                    .filter_map(|i| ids.get(i).copied())
+                    .collect()
+            },
+            |id| *id,
+        )?;
         out.sort_unstable();
         out.dedup();
         Ok(out)
@@ -508,28 +527,35 @@ impl SnapshotIndex {
         min_shared_bands: usize,
     ) -> PersistenceResult<Vec<(u32, f64)>> {
         let mut by_id: HashMap<u32, f64> = HashMap::new();
-        for (id, sim) in self.collect_from_blocks(text, |lsh, ids, sig| {
-            lsh.query_sig_with_similarity_min_shared_bands(sig, min_shared_bands)
-                .into_iter()
-                .filter_map(|(i, sim)| ids.get(i).copied().map(|id| (id, sim)))
-                .collect()
-        })? {
-            if self.catalog.is_live(&id) {
-                by_id
-                    .entry(id)
-                    .and_modify(|existing| *existing = existing.max(sim))
-                    .or_insert(sim);
-            }
+        for (id, sim) in self.collect_from_blocks(
+            text,
+            |lsh, ids, sig| {
+                lsh.query_sig_with_similarity_min_shared_bands(sig, min_shared_bands)
+                    .into_iter()
+                    .filter_map(|(i, sim)| ids.get(i).copied().map(|id| (id, sim)))
+                    .collect()
+            },
+            |(id, _)| *id,
+        )? {
+            by_id
+                .entry(id)
+                .and_modify(|existing| *existing = existing.max(sim))
+                .or_insert(sim);
         }
         let mut out: Vec<(u32, f64)> = by_id.into_iter().collect();
         out.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         Ok(out)
     }
 
+    /// Run `f` over every segment block, keeping only hits whose `id_of` is a
+    /// live copy in that block's segment. The filter has to run here: once hits
+    /// from several segments are unioned, a re-added id's superseded copy is
+    /// indistinguishable from its live one.
     fn collect_from_blocks<T>(
         &self,
         text: &str,
         mut f: impl FnMut(&MinHashTextLSH, &[u32], &crate::MinHashSignature) -> Vec<T>,
+        id_of: impl Fn(&T) -> u32,
     ) -> PersistenceResult<Vec<T>> {
         let mut out: Vec<T> = Vec::new();
         let mut sig = None;
@@ -541,7 +567,11 @@ impl SnapshotIndex {
             }
             if let Some(Some((lsh, ids))) = cache.by_segment_id.get(&seg_id) {
                 let s = sig.get_or_insert_with(|| lsh.signature(text));
-                out.extend(f(lsh, ids, s));
+                out.extend(
+                    f(lsh, ids, s)
+                        .into_iter()
+                        .filter(|hit| self.catalog.is_live_in(seg_id, &id_of(hit))),
+                );
             }
         }
         Ok(out)
@@ -552,7 +582,7 @@ impl SnapshotIndex {
             return Ok(Some(block));
         }
         let segment: Vec<(u32, String)> = self.catalog.read_segment(seg_id)?;
-        let block = self.build_live_index(&segment);
+        let block = self.build_live_index(&segment, seg_id);
         if let Some(block) = &block {
             self.persist_sidecar(block, seg_id);
         }
@@ -576,8 +606,10 @@ impl SnapshotIndex {
         Some(sidecar.block)
     }
 
-    fn build_live_index(&self, batch: &[(u32, String)]) -> Option<Block> {
-        build_block_from_items(batch, &self.config, |id| self.catalog.is_live(id))
+    fn build_live_index(&self, batch: &[(u32, String)], seg_id: u64) -> Option<Block> {
+        build_block_from_items(batch, &self.config, |id| {
+            self.catalog.is_live_in(seg_id, id)
+        })
     }
 
     fn persist_sidecar(&self, block: &Block, seg_id: u64) {
@@ -761,6 +793,64 @@ mod tests {
         assert_eq!(store.space_amplification(), Some(1.0));
         let reopened = UpdatableIndex::open(dir, 2, BlockingConfig::default()).unwrap();
         assert_eq!(reopened.near_duplicates(A), expected);
+    }
+
+    #[test]
+    fn re_added_id_matches_only_its_new_text() {
+        const NEW: &str = "a separate unrelated document";
+        fn ranked_ids(ranked: Vec<(u32, f64)>) -> Vec<u32> {
+            ranked.into_iter().map(|(id, _)| id).collect()
+        }
+
+        let dir = MemoryDirectory::arc();
+        let (name, stale_sidecar) = {
+            let mut store =
+                UpdatableIndex::open(dir.clone(), 2, BlockingConfig::default()).unwrap();
+            store.add(1, A).unwrap();
+            store.add(2, B).unwrap();
+            store.checkpoint().unwrap();
+            // Warm the cached block and sidecar of the segment holding the old copy.
+            assert_eq!(store.near_duplicates(A), vec![1]);
+            let name = store
+                .inner
+                .index_name(store.inner.segment_ids()[0], INDEX_KIND);
+            let stale_sidecar = read_file(store.inner.dir(), &name);
+
+            store.add(1, NEW).unwrap();
+            assert_eq!(
+                store.near_duplicates(A),
+                Vec::<u32>::new(),
+                "buffered re-add"
+            );
+            assert_eq!(store.near_duplicates(NEW), vec![1]);
+
+            // C is identical to A, so A still has one live near-duplicate.
+            store.add(3, C).unwrap();
+            store.checkpoint().unwrap();
+            assert_eq!(store.near_duplicates(A), vec![3], "sealed re-add");
+            assert_eq!(
+                ranked_ids(store.near_duplicates_with_similarity(A)),
+                vec![3]
+            );
+            assert_eq!(store.near_duplicates(NEW), vec![1]);
+            (name, stale_sidecar)
+        };
+
+        let config = BlockingConfig::default();
+        let store = UpdatableIndex::open(dir.clone(), 2, config.clone()).unwrap();
+        assert_eq!(store.near_duplicates(A), vec![3], "reopened writer");
+        assert_eq!(store.near_duplicates(NEW), vec![1]);
+        // A sidecar still holding the old copy (a crash before the writer
+        // removed it) must be filtered per copy by the snapshot.
+        dir.atomic_write(&name, &stale_sidecar).unwrap();
+
+        let snapshot = SnapshotIndex::open(dir, config).unwrap();
+        assert_eq!(snapshot.near_duplicates(A).unwrap(), vec![3], "snapshot");
+        assert_eq!(
+            ranked_ids(snapshot.near_duplicates_with_similarity(A).unwrap()),
+            vec![3]
+        );
+        assert_eq!(snapshot.near_duplicates(NEW).unwrap(), vec![1]);
     }
 
     #[test]
