@@ -8,6 +8,10 @@ Sketching primitives for retrieval.
 MinHash, SimHash, and LSH indexes for near-duplicate detection and approximate
 similarity search.
 
+In Python, datasketch covers the same MinHash and LSH ground; gaoya is a Rust
+MinHash/SimHash LSH crate with Python bindings. Use `sketchir` for
+deterministic Rust sketches with an optional durable, updatable store.
+
 ```toml
 [dependencies]
 sketchir = "0.6"
