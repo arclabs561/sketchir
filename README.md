@@ -14,7 +14,7 @@ deterministic Rust sketches with an optional durable, updatable store.
 
 ```toml
 [dependencies]
-sketchir = "0.6"
+sketchir = "0.7"
 ```
 
 ## Best starting points

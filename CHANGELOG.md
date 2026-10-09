@@ -7,12 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-09
+
 ### Changed
 
+- The optional `store` feature now requires `segstore` 0.6 and `durability`
+  0.8. This is a breaking change: `store::UpdatableIndex::open` and
+  `store::SnapshotIndex::open` take `Arc<dyn durability::Directory>`, so
+  callers must pass a directory from `durability` 0.8.
+- `MinHash` hashes each item once and mixes in each hash function's seed with
+  the splitmix64 finalizer. Before, the seed was fed into FNV ahead of the
+  item, so the hash functions were near-affine images of each other and the
+  Jaccard estimate was biased (0.384 for J = 0.5 with 2000 hashes). MinHash
+  signatures change. The `store` sidecar recipe moves to
+  `sketchir-store-minhash-v2`, so sidecars written by 0.6 are rebuilt on first
+  use instead of being matched against signatures from the new hashes.
+- `DenseSimHash` draws Gaussian hyperplane normals instead of uniform ones in
+  `[-1, 1]`. Fingerprints change.
+- `LSHIndex::search` and `MultibitLSH::search` rank colliding candidates by
+  exact cosine distance instead of `1 - dot`, so inputs need not be
+  normalized. Cosine distance involving a zero vector is `1.0`.
+- `MinHashLSH::new` rejects a `bands * rows_per_band` overflow, and its queries
+  return no candidates for a signature of the wrong length. `MultibitLSH::new`
+  rejects fingerprints wider than 64 bits and an overflowing
+  `num_tables * num_projections`.
+- The published package contains only the sources, tests, examples, benches,
+  README, changelog, and license files.
 - `LSHIndex` and `MultibitLSH` draw Gaussian hyperplane normals instead of
   uniform ones in `[-1, 1]`, so a bit agrees with probability `1 - theta/pi`
   for any input and unit-vector projections match the multi-bit Gaussian
   quantile bins. Hashes and fingerprints from these two types change.
+
+### Fixed
+
+- Re-adding a document id after its earlier copy was sealed into a segment
+  now replaces that copy. Before, `store::UpdatableIndex` and
+  `store::SnapshotIndex` near-duplicate queries could still return the id for
+  text that only its old copy matched, and the ranked queries could report the
+  old copy's higher similarity.
 
 ## [0.6.0] - 2026-07-09
 
