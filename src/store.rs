@@ -53,7 +53,7 @@ struct BlockSidecar {
 
 fn make_sidecar_recipe(config: &BlockingConfig) -> String {
     format!(
-        "sketchir-store-minhash-v1;\
+        "sketchir-store-minhash-v2;\
          codec=postcard-minhash-text-lsh-v1;\
          num_hashes_per_band={};num_bands={};ngram_size={};char_ngrams={}",
         config.num_hashes_per_band, config.num_bands, config.ngram_size, config.char_ngrams
