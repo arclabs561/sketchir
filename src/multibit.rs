@@ -22,11 +22,12 @@
 //! # References
 //!
 //! - Petersen & Sutter, "Distributional Quantization" (2021-2023)
-//! - Kong & Li (2012), "Isotropic Hashing" (multi-bit extension of SimHash)
+//! - Kong & Li (2012), "Double-Bit Quantization for Hashing" (AAAI; multi-bit extension of SimHash)
 
 use std::collections::{HashMap, HashSet};
 
-use crate::{all_finite, lcg_f32, Error};
+use crate::hyperplane::box_muller;
+use crate::{all_finite, Error};
 
 /// Configuration for multi-bit LSH.
 #[derive(Debug, Clone)]
@@ -136,8 +137,14 @@ impl MultibitLSH {
             ^ ((config.num_projections as u64) << 16)
             ^ (config.bits_per_projection as u64);
 
+        // Gaussian normals make a unit vector's projection N(0, 1), which is
+        // what the quantile boundaries above assume.
         let hyperplanes: Vec<Vec<f32>> = (0..total_projections)
-            .map(|_| (0..dimension).map(|_| lcg_f32(&mut rng_state)).collect())
+            .map(|_| {
+                (0..dimension)
+                    .map(|_| box_muller(&mut rng_state).0)
+                    .collect()
+            })
             .collect();
 
         Ok(Self {
@@ -643,6 +650,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn one_bit_agreement_matches_one_minus_theta_over_pi() {
+        // Charikar 2002: for Gaussian hyperplanes P[bit agrees] = 1 - theta/pi.
+        // u = e0, v = (e0 + 2 e1) / sqrt(5): theta = atan(2), rate 0.6476 (a
+        // uniform-cube plane gives 0.625). Pool plane sets over dimensions.
+        let theta = 2.0_f64.atan();
+        let expected = 1.0 - theta / std::f64::consts::PI;
+        let (mut agree, mut total) = (0usize, 0usize);
+        for dim in 2..=300usize {
+            let idx = MultibitLSH::new(dim, MultibitConfig::simhash(64, 1)).unwrap();
+            let mut u = vec![0.0f32; dim];
+            let mut v = vec![0.0f32; dim];
+            u[0] = 1.0;
+            v[0] = 1.0;
+            v[1] = 2.0;
+            let diff = idx.fingerprint(&u, 0) ^ idx.fingerprint(&v, 0);
+            agree += 64 - diff.count_ones() as usize;
+            total += 64;
+        }
+        let rate = agree as f64 / total as f64;
+        // sd = sqrt(0.65 * 0.35 / 19000) = 0.0035
+        assert!((rate - expected).abs() < 0.012, "rate {rate} vs {expected}");
+    }
+
+    #[test]
+    fn unit_vector_projections_fill_the_gaussian_bins_evenly() {
+        // The bin boundaries are N(0, 1) quantiles, so each of the 2^k bins
+        // should catch 1/2^k of a unit vector's projections. Uniform [-1, 1]
+        // planes give projections with variance 1/3, which put about 76% of
+        // them in the inner two bins instead of 50%.
+        let dim = 64;
+        let tables = 8;
+        let idx = MultibitLSH::new(dim, MultibitConfig::multibit(32, 2, tables)).unwrap();
+        let v = vec![1.0 / (dim as f32).sqrt(); dim];
+        let mut counts = [0usize; 4];
+        for table in 0..tables {
+            let fp = idx.fingerprint(&v, table);
+            for p in 0..32 {
+                counts[((fp >> (2 * p)) & 0b11) as usize] += 1;
+            }
+        }
+        // 256 projections: 128 inner expected (sd 8); uniform planes give ~194.
+        let inner = counts[1] + counts[2];
+        assert!((96..=160).contains(&inner), "bin counts {counts:?}");
+    }
+
     // DETERMINISM CANARY
     #[test]
     fn multibit_fingerprint_determinism() {
@@ -650,7 +703,7 @@ mod tests {
         let idx = MultibitLSH::new(4, config).unwrap();
         let fp = idx.fingerprint(&[1.0, -0.5, 0.3, 0.8], 0);
         assert_eq!(
-            fp, 149,
+            fp, 128,
             "Fingerprint changed -- hyperplanes or quantization logic drifted"
         );
     }

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `LSHIndex` and `MultibitLSH` draw Gaussian hyperplane normals instead of
+  uniform ones in `[-1, 1]`, so a bit agrees with probability `1 - theta/pi`
+  for any input and unit-vector projections match the multi-bit Gaussian
+  quantile bins. Hashes and fingerprints from these two types change.
+
 ## [0.6.0] - 2026-07-09
 
 ### Added

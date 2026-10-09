@@ -8,9 +8,10 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
+use crate::hyperplane::box_muller;
 use crate::minhash::MinHashSignature;
 use crate::simhash::SimHashFingerprint;
-use crate::{all_finite, lcg_f32, lcg_next, Error, Fnv1a64};
+use crate::{all_finite, lcg_next, Error, Fnv1a64};
 
 /// LSH index using MinHash banding (near-duplicate detection).
 #[derive(Debug, Clone)]
@@ -330,7 +331,9 @@ impl LSHIndex {
             return Err(Error::EmptyIndex);
         }
 
-        // Deterministic hyperplanes: stable across runs for the same params.
+        // Deterministic Gaussian hyperplanes (LCG + Box-Muller): stable across
+        // runs for the same params. Gaussian normals give P[bit agrees] =
+        // 1 - theta/pi for any input; uniform-cube normals do not.
         let mut rng_state = 0x9E3779B97F4A7C15u64
             ^ (self.dimension as u64)
             ^ ((self.num_tables as u64) << 32)
@@ -339,7 +342,7 @@ impl LSHIndex {
         self.hash_functions = (0..total_functions)
             .map(|_| {
                 (0..self.dimension)
-                    .map(|_| lcg_f32(&mut rng_state))
+                    .map(|_| box_muller(&mut rng_state).0)
                     .collect()
             })
             .collect();
@@ -554,6 +557,34 @@ mod tests {
             assert_eq!(*actual_id, expected_id);
             assert!((actual_distance - expected_distance).abs() <= 1e-6);
         }
+    }
+
+    #[test]
+    fn lsh_index_bit_agreement_matches_one_minus_theta_over_pi() {
+        // Charikar 2002: for Gaussian hyperplanes P[bit agrees] = 1 - theta/pi.
+        // u = e0, v = (e0 + 2 e1) / sqrt(5): theta = atan(2), rate 0.6476 (a
+        // uniform-cube plane gives 0.625). Pool plane sets over dimensions.
+        let theta = 2.0_f64.atan();
+        let expected = 1.0 - theta / std::f64::consts::PI;
+        let (mut agree, mut total) = (0usize, 0usize);
+        for dim in 2..=300usize {
+            let mut u = vec![0.0f32; dim];
+            let mut v = vec![0.0f32; dim];
+            u[0] = 1.0;
+            v[0] = 1.0;
+            v[1] = 2.0;
+            let mut idx = LSHIndex::new(dim, 4, 16).unwrap();
+            idx.add(u.clone()).unwrap();
+            idx.build().unwrap();
+            for table in 0..4 {
+                let diff = idx.compute_hash(&u, table) ^ idx.compute_hash(&v, table);
+                agree += 16 - diff.count_ones() as usize;
+                total += 16;
+            }
+        }
+        let rate = agree as f64 / total as f64;
+        // sd = sqrt(0.65 * 0.35 / 19000) = 0.0035
+        assert!((rate - expected).abs() < 0.012, "rate {rate} vs {expected}");
     }
 
     // DETERMINISM CANARY
