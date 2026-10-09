@@ -193,7 +193,7 @@ fn generate_planes(dim: usize, num_bits: usize, seed: u64) -> Vec<f32> {
 }
 
 /// Box-Muller transform: two uniform (0,1] draws -> two N(0,1) samples.
-fn box_muller(state: &mut u64) -> (f32, f32) {
+pub(crate) fn box_muller(state: &mut u64) -> (f32, f32) {
     // Two independent U(0,1] values using the LCG.
     let u1 = lcg_u01(state);
     let u2 = lcg_u01(state);

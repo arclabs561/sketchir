@@ -43,8 +43,14 @@ impl MinHash {
     pub fn signature<T: Hash>(&self, items: &HashSet<T>) -> MinHashSignature {
         let mut mins = vec![u64::MAX; self.seeds.len()];
         for item in items {
+            // Hash the item once, then derive each hash function by mixing in
+            // its seed. Feeding the seed into the streaming hasher before the
+            // item makes the functions near-affine images of each other.
+            let mut hasher = Fnv1a64::new();
+            item.hash(&mut hasher);
+            let base = hasher.finish();
             for (i, &seed) in self.seeds.iter().enumerate() {
-                let h = self.hash_with_seed(item, seed);
+                let h = splitmix64_finalize(base ^ seed);
                 if h < mins[i] {
                     mins[i] = h;
                 }
@@ -52,13 +58,13 @@ impl MinHash {
         }
         MinHashSignature { values: mins }
     }
+}
 
-    fn hash_with_seed<T: Hash>(&self, item: &T, seed: u64) -> u64 {
-        let mut hasher = Fnv1a64::new();
-        seed.to_le_bytes().hash(&mut hasher);
-        item.hash(&mut hasher);
-        hasher.finish()
-    }
+/// SplitMix64 output finalizer: a bijective 64-bit avalanche mixer.
+fn splitmix64_finalize(mut z: u64) -> u64 {
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
+    z ^ (z >> 31)
 }
 
 /// A MinHash signature (fingerprint) of a set.
@@ -124,10 +130,10 @@ mod tests {
         assert_eq!(
             sig.as_slice(),
             &[
-                5997730903145785187,
-                8107540397845570824,
-                5710066622574848307,
-                548850101144292092,
+                618394535712016381,
+                10459011204920358345,
+                5256087175809828698,
+                11405736172202378937,
             ],
         );
     }
@@ -146,6 +152,17 @@ mod tests {
         let s8 = MinHash::new(8).unwrap();
         let items: HashSet<&str> = ["x"].into_iter().collect();
         assert_eq!(s4.signature(&items).jaccard(&s8.signature(&items)), None);
+    }
+
+    #[test]
+    fn minhash_jaccard_estimate_is_calibrated() {
+        // J = |A & B| / |A | B| = 100 / 200 = 0.5. With 2000 independent hash
+        // functions the estimator has sd = sqrt(0.25 / 2000) ~ 0.011.
+        let mh = MinHash::new(2000).unwrap();
+        let a: HashSet<u32> = (0..150).collect();
+        let b: HashSet<u32> = (50..200).collect();
+        let est = mh.signature(&a).jaccard(&mh.signature(&b)).unwrap();
+        assert!((est - 0.5).abs() < 0.045, "estimate {est} vs J = 0.5");
     }
 
     #[test]

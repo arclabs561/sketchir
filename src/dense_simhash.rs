@@ -12,7 +12,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::{all_finite, lcg_f32, Error};
+use crate::hyperplane::box_muller;
+use crate::{all_finite, Error};
 
 /// Deterministic SimHash for dense vectors using fixed random hyperplanes.
 #[derive(Debug)]
@@ -34,13 +35,15 @@ impl DenseSimHash {
             return Err(Error::InvalidParam("num_bits must be in [1, 64]"));
         }
 
-        // Deterministic hyperplanes (LCG).
+        // Deterministic Gaussian hyperplanes (LCG + Box-Muller). Gaussian
+        // normals make P[bit agrees] = 1 - theta/pi for any input direction;
+        // uniform-cube normals only give that for isotropic inputs.
         let mut hyperplanes = Vec::with_capacity(num_bits);
         let mut rng_state = 0x12345678u64;
         for _ in 0..num_bits {
             let mut plane = Vec::with_capacity(embedding_dim);
             for _ in 0..embedding_dim {
-                plane.push(lcg_f32(&mut rng_state));
+                plane.push(box_muller(&mut rng_state).0);
             }
             hyperplanes.push(plane);
         }
@@ -182,11 +185,36 @@ mod tests {
         assert!(DenseSimHashLSH::new(8, 0).is_err());
     }
 
+    #[test]
+    fn simhash_bit_agreement_matches_one_minus_theta_over_pi() {
+        // Charikar 2002: for Gaussian hyperplanes P[bit agrees] = 1 - theta/pi.
+        // u = e0, v = (e0 + 2 e1) / sqrt(5): theta = atan(2) = 63.43 deg, so
+        // the rate is 0.6476 (a uniform-cube plane gives 0.625 here). Pool
+        // many independent plane sets by varying the dimension.
+        let theta = 2.0_f64.atan();
+        let expected = 1.0 - theta / std::f64::consts::PI;
+        let (mut agree, mut total) = (0usize, 0usize);
+        for dim in 2..=300usize {
+            let dsh = DenseSimHash::new(dim, 64).unwrap();
+            let mut u = vec![0.0f32; dim];
+            let mut v = vec![0.0f32; dim];
+            u[0] = 1.0;
+            v[0] = 1.0;
+            v[1] = 2.0;
+            let diff = dsh.fingerprint(&u).unwrap() ^ dsh.fingerprint(&v).unwrap();
+            agree += 64 - diff.count_ones() as usize;
+            total += 64;
+        }
+        let rate = agree as f64 / total as f64;
+        // sd = sqrt(0.65 * 0.35 / 19000) = 0.0035
+        assert!((rate - expected).abs() < 0.012, "rate {rate} vs {expected}");
+    }
+
     // DETERMINISM CANARY
     #[test]
     fn dense_simhash_fingerprint_determinism() {
         let dsh = DenseSimHash::new(4, 16).unwrap();
         let fp = dsh.fingerprint(&[1.0, -0.5, 0.3, 0.8]).unwrap();
-        assert_eq!(fp, 7679);
+        assert_eq!(fp, 33302);
     }
 }
