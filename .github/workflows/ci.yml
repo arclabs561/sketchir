@@ -27,6 +27,8 @@ jobs:
         run: cargo check --all-targets
       - name: test
         run: cargo test
+      - name: store conformance
+        run: cargo test --features store --test store_conformance
       - name: fmt
         run: cargo fmt --all -- --check
       - name: clippy
