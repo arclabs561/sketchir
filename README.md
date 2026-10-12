@@ -14,8 +14,12 @@ deterministic Rust sketches with an optional durable, updatable store.
 
 ```toml
 [dependencies]
-sketchir = "0.7"
+sketchir = "0.8"
 ```
+
+The default build requires Rust 1.80. The optional `store` feature requires
+Rust 1.83 with current dependencies. On x86_64, the optional `innr` feature
+requires Rust 1.89 for AVX-512 intrinsics.
 
 ## Best starting points
 

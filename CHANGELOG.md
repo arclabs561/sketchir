@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-12
+
+### Changed
+
+- The optional `store` feature now uses `segstore` 0.7 and `durability` 0.9.
+  This is a breaking dependency boundary: callers of `store::UpdatableIndex::open`
+  and `store::SnapshotIndex::open` must pass directories from `durability` 0.9.
+  The store conformance dev dependency also uses `segstore` 0.7.
+
 ## [0.7.0] - 2026-10-09
 
 ### Changed
