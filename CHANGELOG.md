@@ -5,6 +5,15 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Source history (unversioned)
+
+These source changes are listed without assigning them to a published release.
+
+### Maintenance
+
+- Run the existing store conformance integration test with the `store` feature enabled in CI.
+  ([source change](https://github.com/arclabs561/sketchir/commit/2cce7571b9b5baa63f0c232b34df3e1540c81413))
+
 ## [Unreleased]
 
 ## [0.8.0] - 2026-10-12
