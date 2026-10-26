@@ -75,8 +75,10 @@ only when a sidecar is missing or unusable.
 Opt-in; the default build does not depend on segstore.
 
 For measurement, `cargo run --release --features store --example store_reopen_diagnostics`
-prints the first snapshot-query cost with persisted MinHash sidecars present
-versus after deleting those sidecars and forcing source-segment rebuilds.
+reopens a checkpointed store and prints the duration of its first snapshot
+query. It does this twice: once with the persisted MinHash sidecars present,
+and once after deleting those sidecars, which forces each segment to be
+rebuilt from its source text.
 
 ```text
 documents: 1000, flush threshold: 200
