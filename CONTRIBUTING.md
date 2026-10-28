@@ -8,7 +8,9 @@ For non-trivial work (new APIs, features, large refactors), open an issue first 
 
 ## Setup
 
-- Rust toolchain: stable, MSRV `1.80`. Use `rustup` to manage.
+- Use stable Rust for the all-features checks below. The default build supports
+  Rust 1.80; `store` needs 1.83 with current dependencies, and `innr` needs 1.89
+  on x86_64. Manage toolchains with `rustup`.
 - Optional: `cargo-nextest` for faster test runs (`cargo install cargo-nextest`).
 
 ```
