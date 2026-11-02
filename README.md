@@ -6,11 +6,7 @@
 Sketching primitives for retrieval.
 
 MinHash, SimHash, and LSH indexes for near-duplicate detection and approximate
-similarity search.
-
-In Python, datasketch covers the same MinHash and LSH ground; gaoya is a Rust
-MinHash/SimHash LSH crate with Python bindings. Use `sketchir` for
-deterministic Rust sketches with an optional durable, updatable store.
+similarity search, with an optional durable, updatable store.
 
 ```toml
 [dependencies]
@@ -25,8 +21,8 @@ requires Rust 1.89 for AVX-512 intrinsics.
 
 - **Near-duplicate detection**: `MinHashTextLSH` + `BlockingConfig`
 - **SimHash fingerprints**: `SimHashFingerprint` / `SimHashLSH`
-- **Dense-vector LSH (batch)**: `LSHIndex` -- multi-table random projection, add/build/search lifecycle
-- **Dense-vector LSH (incremental)**: `DenseSimHashLSH` -- SimHash + Hamming-1 probing, no build step
+- **Dense-vector LSH (batch)**: `LSHIndex`, multi-table random projection with an add/build/search lifecycle
+- **Dense-vector LSH (incremental)**: `DenseSimHashLSH`, SimHash with Hamming-1 probing and no build step
 
 ## Tuning knobs (`BlockingConfig`)
 
@@ -54,7 +50,19 @@ assert!(!pairs.is_empty());
 
 Runnable examples live in [`examples/`](examples/):
 
-- `dedup_documents` indexes a document set and returns candidate near-duplicate pairs via MinHash LSH blocking.
+- `dedup_documents` indexes a document set and returns candidate near-duplicate pairs via MinHash LSH blocking:
+
+  ```text
+  Indexed 6 documents
+
+  Near-duplicate pairs:
+    "original" <-> "minor_edit"
+    "original" <-> "reordered"
+    "minor_edit" <-> "reordered"
+
+  Unique documents after dedup: 4
+  ```
+
 - `minhash_jaccard_validation` checks the MinHash Jaccard estimate against the exact Jaccard index, confirming the sketch is accurate before trusting it at scale.
 - `updatable_store` exercises the optional durable store: add documents, checkpoint,
   delete one, reopen, and query ranked near-duplicates. Run with `--features store`.
@@ -78,7 +86,8 @@ For measurement, `cargo run --release --features store --example store_reopen_di
 reopens a checkpointed store and prints the duration of its first snapshot
 query. It does this twice: once with the persisted MinHash sidecars present,
 and once after deleting those sidecars, which forces each segment to be
-rebuilt from its source text.
+rebuilt from its source text. Timings below are from one run and vary by
+machine and run.
 
 ```text
 documents: 1000, flush threshold: 200
