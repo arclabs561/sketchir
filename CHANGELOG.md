@@ -16,6 +16,12 @@ These source changes are listed without assigning them to a published release.
 
 ## [Unreleased]
 
+### Fixed
+
+- Word-shingle text blocking ignores spacing for texts with fewer words than
+  `ngram_size`, as it already did for longer texts. Previously `"a  b"` and
+  `"a b"` got disjoint shingle sets and an estimated similarity of 0.
+
 ## [0.8.0] - 2026-10-12
 
 ### Changed
