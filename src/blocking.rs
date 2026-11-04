@@ -303,7 +303,9 @@ fn shingle(text: &str, n: usize, char_ngrams: bool) -> HashSet<String> {
     } else {
         let words: Vec<&str> = normalized.split_whitespace().collect();
         if words.len() < n {
-            return HashSet::from([normalized]);
+            // The whole word sequence, joined like the n-gram shingles, so
+            // spacing does not matter for short texts either.
+            return HashSet::from([words.join(" ")]);
         }
         words.windows(n).map(|w| w.join(" ")).collect()
     }
@@ -372,6 +374,24 @@ mod tests {
         let mut sorted = pairs.clone();
         sorted.sort_unstable();
         assert_eq!(pairs, sorted);
+    }
+
+    #[test]
+    fn word_shingles_ignore_spacing_below_ngram_size() {
+        // Word mode splits on whitespace, so the spacing between words must
+        // not change the shingle set, whether or not the text has n words.
+        let cfg = BlockingConfig {
+            char_ngrams: false,
+            ngram_size: 3,
+            ..BlockingConfig::default()
+        };
+        let mut lsh = MinHashTextLSH::new(cfg).unwrap();
+        lsh.insert_text("long-a", "alpha  beta gamma");
+        lsh.insert_text("long-b", "alpha beta gamma");
+        lsh.insert_text("short-a", "Alpha \t beta ");
+        lsh.insert_text("short-b", "alpha beta");
+        assert_eq!(lsh.estimated_similarity(0, 1), Some(1.0));
+        assert_eq!(lsh.estimated_similarity(2, 3), Some(1.0));
     }
 
     #[test]
