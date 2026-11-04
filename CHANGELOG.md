@@ -16,6 +16,8 @@ These source changes are listed without assigning them to a published release.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-04
+
 ### Fixed
 
 - Word-shingle text blocking ignores spacing for texts with fewer words than
