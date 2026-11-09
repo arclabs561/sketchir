@@ -31,7 +31,7 @@ store = ["serde", "dep:segstore", "dep:durability", "dep:postcard"]
 serde = { version = "1.0", optional = true, features = ["derive"] }
 innr = { version = "0.6", optional = true }
 segstore = { version = "0.7", optional = true }
-durability = { version = "0.9", optional = true }
+durability = { version = "0.10", optional = true }
 postcard = { version = "1.0", optional = true, features = ["use-crc", "alloc", "use-std"] }
 
 [dev-dependencies]
