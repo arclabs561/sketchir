@@ -18,11 +18,13 @@ use `cargo bench` for measurement.
 
 | Example | What it shows |
 |---|---|
-| `dedup_documents` | Inserts six short documents into `MinHashTextLSH`, prints the candidate near-duplicate pairs, and counts documents left after dropping the second member of each pair |
+| `dedup_documents` | Inserts six short documents into `MinHashTextLSH`, prints candidate pairs and their estimated Jaccard similarity |
 | `minhash_jaccard_validation` | Prints MinHash estimates for identical and disjoint sets, then the mean absolute error against exact Jaccard over 40 set pairs for k = 64, 256, 1024, next to 1/sqrt(k) |
 
 ```sh
 cargo run --release --example dedup_documents
+# Each UTF-8 file is one document. Pass two copies to see a 1.000 match.
+cargo run --release --example dedup_documents -- original.txt revision.txt notes.txt
 cargo run --release --example minhash_jaccard_validation
 ```
 

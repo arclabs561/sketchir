@@ -50,17 +50,20 @@ assert!(!pairs.is_empty());
 
 Runnable examples live in [`examples/`](examples/):
 
-- `dedup_documents` indexes a document set and returns candidate near-duplicate pairs via MinHash LSH blocking:
+- Compare UTF-8 documents with MinHash LSH. Each argument is a file. The score is estimated Jaccard similarity. A candidate pair needs verification before either document is discarded.
+
+  ```sh
+  cargo run --example dedup_documents -- original.txt revision.txt
+  ```
+
+  With no arguments the example uses six short documents:
 
   ```text
   Indexed 6 documents
-
-  Near-duplicate pairs:
-    "original" <-> "minor_edit"
-    "original" <-> "reordered"
-    "minor_edit" <-> "reordered"
-
-  Unique documents after dedup: 4
+  Candidate pairs (estimated Jaccard):
+    "original" <-> "minor_edit"  0.860
+    "original" <-> "reordered"  0.770
+    "minor_edit" <-> "reordered"  0.810
   ```
 
 - `minhash_jaccard_validation` checks the MinHash Jaccard estimate against the exact Jaccard index, confirming the sketch is accurate before trusting it at scale.
