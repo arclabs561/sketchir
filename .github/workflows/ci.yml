@@ -58,9 +58,15 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Resolve dependencies for the declared Rust version
+        env:
+          CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
+        run: |
+          rustup toolchain install 1.85.0 --profile minimal
+          cargo +1.85.0 generate-lockfile
       - name: Default feature floor
         if: matrix.toolchain == '1.80.0'
-        run: cargo check --lib
+        run: cargo check --locked --lib
       - name: Store feature floor
         if: matrix.toolchain == '1.83.0'
-        run: cargo check --lib --features store
+        run: cargo check --locked --lib --features store
