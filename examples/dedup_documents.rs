@@ -1,17 +1,7 @@
-/// Find near-duplicate documents in a collection.
-///
-/// A common preprocessing step before indexing: detect and remove
-/// near-duplicates that would inflate results and waste storage.
-/// MinHash + LSH gives approximate Jaccard similarity in O(n) time
-/// instead of O(n^2) pairwise comparison.
-///
-/// ```sh
-/// cargo run --example dedup_documents
-/// ```
 use sketchir::{BlockingConfig, MinHashTextLSH};
 
-fn main() {
-    let documents = vec![
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let samples = [
         (
             "original",
             "The quick brown fox jumps over the lazy dog near the riverbank",
@@ -46,30 +36,29 @@ fn main() {
     };
     let mut index = MinHashTextLSH::new(cfg).unwrap();
 
-    for (id, text) in &documents {
-        index.insert_text(*id, *text);
+    let paths: Vec<_> = std::env::args_os().skip(1).collect();
+    if paths.is_empty() {
+        for (id, text) in samples {
+            index.insert_text(id, text);
+        }
+    } else {
+        for path in paths {
+            let text =
+                std::fs::read_to_string(&path).map_err(|e| format!("opening {path:?}: {e}"))?;
+            index.insert_text(path.to_string_lossy(), text);
+        }
     }
-    println!("Indexed {} documents\n", documents.len());
-
-    // candidate_pairs returns (i, j) index pairs into insertion order.
+    println!("Indexed {} documents", index.len());
+    println!("Candidate pairs (estimated Jaccard):");
     let pairs = index.candidate_pairs();
-    println!("Near-duplicate pairs:");
     if pairs.is_empty() {
         println!("  (none found)");
     }
-    for (i, j) in &pairs {
-        println!("  {:?} <-> {:?}", documents[*i].0, documents[*j].0);
+    for (i, j) in pairs {
+        let left = index.get_id(i).unwrap();
+        let right = index.get_id(j).unwrap();
+        let similarity = index.estimated_similarity(i, j).unwrap();
+        println!("  {left:?} <-> {right:?}  {similarity:.3}");
     }
-
-    // Dedup: keep the first document from each duplicate pair.
-    let mut removed = std::collections::HashSet::new();
-    for (_, j) in &pairs {
-        removed.insert(*j);
-    }
-    let unique: Vec<_> = documents
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| !removed.contains(i))
-        .collect();
-    println!("\nUnique documents after dedup: {}", unique.len());
+    Ok(())
 }
