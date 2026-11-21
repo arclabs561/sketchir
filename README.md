@@ -13,9 +13,18 @@ similarity search, with an optional durable, updatable store.
 sketchir = "0.8"
 ```
 
-The default build requires Rust 1.80. The optional `store` feature requires
-Rust 1.83 with current dependencies. On x86_64, the optional `innr` feature
+The default build supports Rust 1.80. The optional `store` feature supports
+Rust 1.83 with compatible dependencies. On x86_64, the optional `innr` feature
 requires Rust 1.89 for AVX-512 intrinsics.
+
+Cargo 1.83 can select dependencies that need a newer compiler. From a fresh
+checkout, resolve for the declared Rust version, then check with the old toolchain:
+
+```sh
+rustup toolchain install 1.85.0 1.83.0 --profile minimal
+CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback cargo +1.85.0 generate-lockfile
+cargo +1.83.0 check --locked --lib --features store
+```
 
 ## Best starting points
 
