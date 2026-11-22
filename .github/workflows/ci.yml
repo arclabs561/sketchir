@@ -58,6 +58,14 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Check fresh consumer on Rust 1.83.0
+        if: matrix.toolchain == '1.83.0'
+        run: |
+          consumer="$RUNNER_TEMP/consumer"
+          cargo +1.83.0 new --lib "$consumer"
+          cd "$consumer"
+          cargo +1.83.0 add sketchir --path "$GITHUB_WORKSPACE" --features store
+          cargo +1.83.0 check
       - name: Resolve dependencies for the declared Rust version
         env:
           CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
